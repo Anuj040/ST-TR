@@ -1,0 +1,15 @@
+- ignite==1.1.0
+networkx==2.3
+- numpy=1.16.3
+- scipy=1.2.1
+tensorboardX
+- tensorflow=1.13.1
+- seaborn
+- pandas
+- matplotlib
+pyyaml==5.4
+sacred
+scikit-learn
+ConfigArgParse
+adamod
+tqdm

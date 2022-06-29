@@ -1,0 +1,18 @@
+version: "3"
+services:
+  sttr:
+    image: sttr:latest
+    volumes:
+      - ./:/sttr
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    tty: true
+    shm_size: '1gb'
+    ulimits:
+      memlock: -1
+    network_mode: "host"
