@@ -1,0 +1,13 @@
+# Directories
+datasets
+NTT_test
+kinetics_data
+
+# Setup
+build
+code.egg*
+dist
+
+# Binaries
+__pycache__/
+

@@ -6,7 +6,7 @@ tensorboardX
 - tensorflow=1.13.1
 - seaborn
 - pandas
-- matplotlib
+matplotlib
 pyyaml==5.4
 sacred
 scikit-learn
