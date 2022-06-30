@@ -1,218 +1,28 @@
 #!/usr/bin/env python
 
-import json
 import os
 import pickle
-import time
 
 import adamod
-import configargparse as argparse
 import networkx as nx
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import yaml
-from arg_types import arg_boolean
+from argument_parser import get_parser
 from sklearn.metrics import confusion_matrix
 from tensorboardX import SummaryWriter
+from utils.misc import import_class, save_arg
+from utils.time_utils import TimeKeeper
+from utils.train_utils import adjust_learning_rate, save_checkpoint
 
-name_exp = "NTT_test"
-writer = SummaryWriter(f"./{name_exp}")
+NAME_EXP = "NTT_test"
+writer = SummaryWriter(f"./{NAME_EXP}")
 np.random.seed(13696641)
 torch.manual_seed(13696641)
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-
-def get_parser():
-    # parameter priority: command line > config > default
-
-    parser = argparse.ArgumentParser(
-        description="Spatial Temporal Graph Convolution Network"
-    )
-    parser.add_argument("--val_split", type=int, default=0.2)
-    parser.add_argument("--data_dir", type=str)
-    parser.add_argument("--log_dir", type=str, default=f"checkpoints/{name_exp}")
-    parser.add_argument("--exp_name", type=str, default=name_exp)
-    parser.add_argument("--num_workers", type=int, default=10)
-    parser.add_argument("--clip_grad_norm", type=float, default=0.5)
-    parser.add_argument("--writer_enabled", type=arg_boolean, default=True)
-    parser.add_argument("--gcn0_flag", type=arg_boolean, default=False)
-    parser.add_argument("--scheduling_lr", type=arg_boolean, default=True)
-    parser.add_argument("--complete", type=arg_boolean, default=True)
-    parser.add_argument("--bn_flag", type=arg_boolean, default=True)
-    parser.add_argument("--accumulating_gradients", type=arg_boolean, default=True)
-    parser.add_argument("--optimize_every", type=int, default=2)
-    parser.add_argument("--clip", type=arg_boolean, default=False)
-    parser.add_argument("--validation_split", type=arg_boolean, default=False)
-    parser.add_argument("--data_mirroring", type=arg_boolean, default=False)
-    parser.add_argument("--local_rank", type=int, default=0)
-
-    parser.add_argument(
-        "--work-dir",
-        default="./" + name_exp,
-        help="the work folder for storing results",
-    )
-    parser.add_argument(
-        "--config",
-        default="config/st_gcn/kinetics-skeleton/train.yaml",
-        help="path to the configuration file",
-    )
-
-    # processor
-    parser.add_argument("--phase", default="train", help="must be train or test")
-    parser.add_argument(
-        "--save_score",
-        type=str2bool,
-        default=True,
-        help="if ture, the classification score will be stored",
-    )
-
-    # visulize and debug
-    parser.add_argument(
-        "--seed", type=int, default=13696642, help="random seed for pytorch"
-    )
-    parser.add_argument(
-        "--training", type=str2bool, default=True, help="training or testing mode"
-    )
-
-    parser.add_argument(
-        "--log-interval",
-        type=int,
-        default=100,
-        help="the interval for printing messages (#iteration)",
-    )
-    parser.add_argument(
-        "--save-interval",
-        type=int,
-        default=1,
-        help="the interval for storing models (#iteration)",
-    )
-    parser.add_argument(
-        "--eval-interval",
-        type=int,
-        default=10,
-        help="the interval for evaluating models (#iteration)",
-    )
-    parser.add_argument(
-        "--print-log", type=str2bool, default=True, help="print logging or not"
-    )
-    parser.add_argument(
-        "--show-topk",
-        type=int,
-        default=[1, 5],
-        nargs="+",
-        help="which Top K accuracy will be shown",
-    )
-
-    # feeder
-    parser.add_argument(
-        "--feeder", default="feeder.Feeder", help="data loader will be used"
-    )
-    parser.add_argument(
-        "--feeder_augmented",
-        default="feeder.feeder_augmented",
-        help="data loader will be used",
-    )
-
-    parser.add_argument(
-        "--num-worker",
-        type=int,
-        default=10,
-        help="the number of worker for data loader",
-    )
-    parser.add_argument(
-        "--train-feeder-args",
-        default=dict(),
-        help="the arguments of data loader for training",
-    )
-    parser.add_argument(
-        "--test-feeder-args",
-        default=dict(),
-        help="the arguments of data loader for test",
-    )
-
-    parser.add_argument(
-        "--train_feeder_args_new",
-        default=dict(),
-        help="the arguments of data loader for training",
-    )
-    parser.add_argument(
-        "--test_feeder_args_new",
-        default=dict(),
-        help="the arguments of data loader for test",
-    )
-    # model
-    parser.add_argument("--model", default=None, help="the model will be used")
-    parser.add_argument(
-        "--model-args", type=dict, default=dict(), help="the arguments of model"
-    )
-    parser.add_argument(
-        "--weights", default=None, help="the weights for network initialization"
-    )
-    parser.add_argument(
-        "--ignore-weights",
-        type=str,
-        default=[],
-        nargs="+",
-        help="the name of weights which will be ignored in the initialization",
-    )
-
-    # optim
-    parser.add_argument(
-        "--scheduler", type=float, default=0, help="initial learning rate"
-    )
-    parser.add_argument(
-        "--base-lr", type=float, default=0.1, help="initial learning rate"
-    )
-    parser.add_argument(
-        "--step",
-        type=int,
-        default=[20, 40, 60],
-        nargs="+",
-        help="the epoch where optimizer reduce the learning rate",
-    )
-    parser.add_argument(
-        "--device",
-        type=int,
-        default=0,
-        nargs="+",
-        help="the indexes of GPUs for training or testing",
-    )
-    parser.add_argument("--optimizer", default="SGD", help="type of optimizer")
-    parser.add_argument(
-        "--nesterov", type=str2bool, default=False, help="use nesterov or not"
-    )
-    parser.add_argument(
-        "--batch-size", type=int, default=256, help="training batch size"
-    )
-    parser.add_argument(
-        "--test-batch-size", type=int, default=256, help="test batch size"
-    )
-    parser.add_argument(
-        "--start-epoch", type=int, default=0, help="start training from which epoch"
-    )
-    parser.add_argument(
-        "--num_epoch", type=int, default=120, help="stop training in which epoch"
-    )
-    parser.add_argument(
-        "--weight-decay", type=float, default=0.0005, help="weight decay for optimizer"
-    )
-    parser.add_argument(
-        "--display_by_category",
-        type=str2bool,
-        default=False,
-        help="if ture, the top k accuracy by category  will be displayed",
-    )
-    parser.add_argument(
-        "--display_recall_precision",
-        type=str2bool,
-        default=False,
-        help="if ture, recall and precision by category  will be displayed",
-    )
-
-    return parser
 
 
 class Processor:
@@ -222,35 +32,19 @@ class Processor:
 
     def __init__(self, arg):
         self.arg = arg
-        self.save_arg()
         self.load_data()
         self.load_model()
         self.load_optimizer()
+        self.graph = nx.Graph()
+
+        self.time_keeper = TimeKeeper(arg)
+        save_arg(arg)
+
+        self.best_epoch = 0
         self.seen = 0
         self.best_accuracy = 0
         self.params = arg
-        self.graph = nx.Graph()
         self.num_joints = 25
-        self.best_epoch = 0
-
-    def save_checkpoint(self, path, filename, epoch):
-        os.makedirs(path, exist_ok=True)
-
-        try:
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "best_epoch": self.best_epoch,
-                    "best_epoch_score": self.best_accuracy,
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": self.optimizer.state_dict(),
-                },
-                os.path.join(path, filename),
-            )
-
-        except Exception as e:
-            print("An error occurred while saving the checkpoint:")
-            print(e)
 
     def load_checkpoint(self, path, filename):
         ckpt_path = os.path.join(path, filename)
@@ -261,17 +55,6 @@ class Processor:
         self.best_epoch_score = checkpoint["best_epoch_score"]
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-    def json_params(self, savedir):
-        try:
-            dict_params = vars(self.params)
-            json_path = os.path.join(savedir, "params.json")
-
-            with open(json_path, "w") as fp:
-                json.dump(dict_params, fp)
-        except Exception as e:
-            print("An error occurred while saving parameters into JSON:")
-            print(e)
 
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
@@ -316,11 +99,12 @@ class Processor:
 
     def load_model(self):
         Model = import_class(self.arg.model)
-        self.model = Model(**self.arg.model_args).to(DEVICE)
+        # self.model = Model(**self.arg.model_args).to(DEVICE)
+        self.model = nn.DataParallel(Model(**self.arg.model_args).to(DEVICE))
         self.loss = nn.CrossEntropyLoss().to(DEVICE)
 
         if self.arg.weights:
-            self.print_log(f"Load weights from {self.arg.weights}.")
+            self.time_keeper.print_log(f"Load weights from {self.arg.weights}.")
             if ".pkl" in self.arg.weights:
                 with open(self.arg.weights, "r") as f:
                     weights = pickle.load(f)
@@ -331,9 +115,9 @@ class Processor:
 
             for w in self.arg.ignore_weights:
                 if weights.pop(w, None) is not None:
-                    self.print_log(f"Sucessfully Remove Weights: {w}.")
+                    self.time_keeper.print_log(f"Sucessfully Remove Weights: {w}.")
                 else:
-                    self.print_log(f"Can Not Remove Weights: {w}.")
+                    self.time_keeper.print_log(f"Can Not Remove Weights: {w}.")
 
             try:
                 self.model.load_state_dict(weights)
@@ -346,7 +130,9 @@ class Processor:
                 state.update(weights)
                 self.model.load_state_dict(state)
 
-        self.model = nn.DataParallel(self.model)
+            # If the pretrained models are without the DataParallel wrapper
+            # self.model = nn.DataParallel(self.model)
+            # torch.save(self.model.state_dict(), self.arg.weights.replace("_temporal.pt", "_temporal_data.pt"))
 
     def load_optimizer(self):
         if self.arg.optimizer == "SGD":
@@ -374,57 +160,18 @@ class Processor:
         else:
             raise ValueError()
 
-    def save_arg(self):
-        # save arg
-        arg_dict = vars(self.arg)
-        if not os.path.exists(self.arg.work_dir):
-            os.makedirs(self.arg.work_dir)
-        with open(f"{self.arg.work_dir}/config.yaml", "w") as f:
-            yaml.dump(arg_dict, f)
-
-    def adjust_learning_rate(self, epoch):
-        if self.arg.optimizer not in ["SGD", "Adam", "Adamod"]:
-            raise ValueError()
-
-        step = self.arg.step
-        lr = self.arg.base_lr * (self.arg.base_lr ** np.sum(epoch >= np.array(step)))
-        for param_group in self.optimizer.param_groups:
-            param_group["lr"] = lr
-        return lr
-
-    def print_time(self):
-        localtime = time.asctime(time.localtime(time.time()))
-        self.print_log(f"Local current time :  {localtime}")
-
-    def print_log(self, string, print_time=True):
-        if print_time:
-            localtime = time.asctime(time.localtime(time.time()))
-            string = f"[ {localtime} ] {string}"
-        print(string)
-        if self.arg.print_log:
-            with open(f"{self.arg.work_dir}/log.txt", "a") as f:
-                print(string, file=f)
-
-    def record_time(self):
-        self.cur_time = time.time()
-        return self.cur_time
-
-    def split_time(self):
-        split_time = time.time() - self.cur_time
-        self.record_time()
-        return split_time
-
     def train(self, epoch, save_model=True):
 
         self.model.train()
-        self.print_log(f"Training epoch: {epoch + 1}")
+        self.time_keeper.print_log(f"Training epoch: {epoch + 1}")
         loader = self.data_loader["train"]
-        lr = self.arg.base_lr
-        lr = self.adjust_learning_rate(epoch)
+        lr = adjust_learning_rate(self.arg, self.optimizer, epoch)
         loss_value = []
         train_total = 0
         train_correct = 0
-        self.record_time()
+
+        # Set the current_time
+        self.time_keeper.record_time()
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
 
         if not arg.accumulating_gradients:
@@ -432,7 +179,7 @@ class Processor:
                 data = data.float().to(DEVICE)
                 label = label.long().to(DEVICE)
 
-                timer["dataloader"] += self.split_time()
+                timer["dataloader"] += self.time_keeper.split_time()
 
                 name = name[0]
                 output = self.model(data, label, name)
@@ -447,7 +194,7 @@ class Processor:
                 train_total = train_total + label.size(0)
                 train_correct = train_correct + (predictions == label).sum().item()
                 acc = 100 * train_correct / train_total
-                timer["model"] += self.split_time()
+                timer["model"] += self.time_keeper.split_time()
 
                 info = {"loss-Train": loss, "accuracy-Train": acc}
 
@@ -475,18 +222,20 @@ class Processor:
 
                 # statistics
                 if batch_idx % self.arg.log_interval == 0:
-                    self.print_log(
+                    self.time_keeper.print_log(
                         f"\tBatch({batch_idx}/{len(loader)}) done. Loss: {loss.data.item():.4f}  lr:{lr:.6f}"
                     )
-                timer["statistics"] += self.split_time()
+                timer["statistics"] += self.time_keeper.split_time()
 
             # statistics of time consumption and loss
             proportion = {
                 k: f"{int(round(v * 100 / sum(timer.values()))):02d}%"
                 for k, v in timer.items()
             }
-            self.print_log(f"\tMean training loss: {np.mean(loss_value):.4f}.")
-            self.print_log(
+            self.time_keeper.print_log(
+                f"\tMean training loss: {np.mean(loss_value):.4f}."
+            )
+            self.time_keeper.print_log(
                 "\tTime consumption: [Data]{dataloader}, [Network]{model}".format(
                     **proportion
                 )
@@ -514,7 +263,7 @@ class Processor:
                 data = data.float().to(DEVICE)
                 label = label.long().to(DEVICE)
 
-                timer["dataloader"] += self.split_time()
+                timer["dataloader"] += self.time_keeper.split_time()
 
                 # forward
 
@@ -529,7 +278,7 @@ class Processor:
                 train_total = train_total + label.size(0)
                 train_correct = train_correct + (predictions == label).sum().item()
                 acc = 100 * train_correct / train_total
-                timer["model"] += self.split_time()
+                timer["model"] += self.time_keeper.split_time()
 
                 info = {"loss-Train": loss, "accuracy-Train": acc}
 
@@ -582,8 +331,15 @@ class Processor:
                             model_path = (
                                 f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
                             )
-                            self.save_checkpoint(
-                                self.arg.work_dir, "epoch%d.ckpt" % epoch, epoch
+                            state_dict = {
+                                "epoch": epoch,
+                                "best_epoch": self.best_epoch,
+                                "best_epoch_score": self.best_accuracy,
+                                "model_state_dict": self.model.state_dict(),
+                                "optimizer_state_dict": self.optimizer.state_dict(),
+                            }
+                            save_checkpoint(
+                                self.arg.work_dir, f"epoch{epoch+1}.ckpt", state_dict
                             )
                             torch.save(self.model.state_dict(), model_path)
 
@@ -605,18 +361,20 @@ class Processor:
 
                     # statistics
                 if batch_idx % self.arg.log_interval == 0:
-                    self.print_log(
+                    self.time_keeper.print_log(
                         f"\tBatch({batch_idx}/{len(loader)}) done. Loss: {loss.data.item():.4f}  lr:{lr:.6f}"
                     )
-                timer["statistics"] += self.split_time()
+                timer["statistics"] += self.time_keeper.split_time()
 
             # statistics of time consumption and loss
             proportion = {
                 k: f"{int(round(v * 100 / sum(timer.values()))):02d}%"
                 for k, v in timer.items()
             }
-            self.print_log(f"\tMean training loss: {np.mean(loss_value):.4f}.")
-            self.print_log(
+            self.time_keeper.print_log(
+                f"\tMean training loss: {np.mean(loss_value):.4f}."
+            )
+            self.time_keeper.print_log(
                 "\tTime consumption: [Data]{dataloader}, [Network]{model}".format(
                     **proportion
                 )
@@ -625,17 +383,25 @@ class Processor:
             if True:
                 print("saving!")
                 model_path = f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
-                self.save_checkpoint(self.arg.work_dir, "epoch%d.ckpt" % epoch, epoch)
+                state_dict = {
+                    "epoch": epoch,
+                    "best_epoch": self.best_epoch,
+                    "best_epoch_score": self.best_accuracy,
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                }
+                save_checkpoint(self.arg.work_dir, f"epoch{epoch+1}.ckpt", state_dict)
                 torch.save(self.model.state_dict(), model_path)
 
     def test(self, epoch, save_score=True, loader_name=["test"]):
         self.model.eval()
-        self.print_log(f"Eval epoch: {epoch + 1}")
+        self.time_keeper.print_log(f"Eval epoch: {epoch + 1}")
         val_correct = 0
         val_total = 0
         conf_matrix_test = 0
-        class_correct = list(0.0 for i in range(0, self.arg.model_args["num_class"]))
-        class_total = list(0.0 for i in range(0, self.arg.model_args["num_class"]))
+        class_correct = [0.0] * self.arg.model_args["num_class"]
+        class_total = [0.0] * self.arg.model_args["num_class"]
+
         with torch.no_grad():
             for ln in loader_name:
                 loss_value = []
@@ -657,10 +423,10 @@ class Processor:
                     )
                     val_accuracy = (val_correct / val_total) * 100
                     c = (label == predictions.squeeze()).float()
-                    (c).float().mean()
+                    c.float().mean()
 
                     # Calculating validation accuracy for each class
-                    for l in range(0, label.size(0)):
+                    for l in range(label.size(0)):
                         class_label = label[l]
                         class_correct[class_label - 1] = (
                             class_correct[class_label - 1] + c[l]
@@ -675,7 +441,7 @@ class Processor:
                         labels=np.arange(self.arg.model_args["num_class"]),
                     )
                     np.save(
-                        os.path.join(name_exp, f"confusion_test_{epoch}"),
+                        os.path.join(NAME_EXP, f"confusion_test_{epoch}"),
                         conf_matrix_test,
                     )
 
@@ -690,7 +456,7 @@ class Processor:
                     ) as f:
                         pickle.dump(score_dict, f)
 
-                self.print_log(
+                self.time_keeper.print_log(
                     f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
                 )
 
@@ -699,7 +465,7 @@ class Processor:
                         ln
                     ].dataset.calculate_recall_precision(score)
                     for i in range(len(precision)):
-                        self.print_log(
+                        self.time_keeper.print_log(
                             f"\tClass{i + 1} Precision: {100 * precision[i]:.2f}%, Recall: {100 * recall[i]:.2f}%"
                         )
 
@@ -709,15 +475,15 @@ class Processor:
                             score, k
                         )
                         for i in range(score.shape[1]):
-                            self.print_log(
+                            self.time_keeper.print_log(
                                 f"\tClass{i + 1} Top{k}: {100 * accuracy[i]:.2f}%"
                             )
-                        self.print_log(
+                        self.time_keeper.print_log(
                             f"\tTop{k}: {100 * sum(accuracy) / len(accuracy):.2f}%"
                         )
                     else:
-                        self.print_log(
-                            "\tTop{k}: {100 * self.data_loader[ln].dataset.top_k(score, k):.2f}%"
+                        self.time_keeper.print_log(
+                            f"\tTop{k}: {100 * self.data_loader[ln].dataset.top_k(score, k):.2f}%"
                         )
 
                 print("Here are the just predicted labels: ", predictions)
@@ -744,22 +510,17 @@ class Processor:
                 # conf_fig = plt.figure(figsize=(13, 10))
                 # plt.title("Confusion Matrix - Validation")
                 # sn.heatmap(df_cm, annot=True)
-                #
-                step = (epoch + 1) * (len(self.data_loader["train"]))
-
-                for tag, value in info.items():
-                    #     # logger.scalar_summary(tag, value, epoch + 1)
-                    writer.add_scalar(tag, value, step)
 
         print(f"\n{stats_val}")
 
     def val(self, epoch, save_score=False, loader_name=["val"]):
         self.model.eval()
-        self.print_log(f"Eval epoch: {epoch + 1}")
+        self.time_keeper.print_log(f"Eval epoch: {epoch + 1}")
         val_correct = 0
         val_total = 0
-        class_correct = list(0.0 for i in range(0, self.arg.model_args["num_class"]))
-        class_total = list(0.0 for i in range(0, self.arg.model_args["num_class"]))
+        class_correct = [0.0] * self.arg.model_args["num_class"]
+        class_total = [0.0] * self.arg.model_args["num_class"]
+
         with torch.no_grad():
             for ln in loader_name:
                 loss_value = []
@@ -792,12 +553,12 @@ class Processor:
 
                     info = {"loss-Val": loss, "accuracy-val": val_accuracy}
                 # conf_matrix_val += confusion_matrix(predictions.cpu(), label.cpu(), labels=np.arange(self.arg.model_args['num_class']))
-                # np.save("./checkpoints/" + name_exp + "/conf_val_" + str(epoch),
+                # np.save("./checkpoints/" + NAME_EXP + "/conf_val_" + str(epoch),
                 #       conf_matrix_val)
 
                 np.concatenate(score_frag)
 
-                self.print_log(
+                self.time_keeper.print_log(
                     f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
                 )
 
@@ -824,7 +585,7 @@ class Processor:
                     #     # logger.scalar_summary(tag, value, epoch + 1)
                     writer.add_scalar(tag, value, step)
 
-        print("\n" + stats_val)
+        print(f"\n{stats_val}")
         return val_accuracy
 
     def start(self):
@@ -843,7 +604,7 @@ class Processor:
         print("Layer params: ", layer_params)
 
         if self.arg.phase == "train":
-            self.print_log(f"Parameters:\n{str(vars(self.arg))}\n")
+            self.time_keeper.print_log(f"Parameters:\n{str(vars(self.arg))}\n")
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
 
                 save_model = ((epoch + 1) % self.arg.save_interval == 0) or (
@@ -870,15 +631,15 @@ class Processor:
                         break
                 else:
                     pass
-            load_model_path = os.path.join(name_exp, f"epoch{epoch+1}_model.pt")
-            self.print_log(f"Load weights from {load_model_path}.")
+            load_model_path = os.path.join(NAME_EXP, f"epoch{epoch+1}_model.pt")
+            self.time_keeper.print_log(f"Load weights from {load_model_path}.")
             weights = torch.load(load_model_path)
 
             for w in self.arg.ignore_weights:
                 if weights.pop(w, None) is not None:
-                    self.print_log(f"Sucessfully Remove Weights: {w}.")
+                    self.time_keeper.print_log(f"Sucessfully Remove Weights: {w}.")
                 else:
-                    self.print_log(f"Can Not Remove Weights: {w}.")
+                    self.time_keeper.print_log(f"Can Not Remove Weights: {w}.")
 
             try:
                 self.model.load_state_dict(weights)
@@ -891,39 +652,22 @@ class Processor:
                 state.update(weights)
                 self.model.load_state_dict(state)
             self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
-            self.print_log("Done.\n")
+            self.time_keeper.print_log("Done.\n")
 
         elif self.arg.phase == "test":
             if self.arg.weights is None:
                 raise ValueError("Please appoint --weights.")
-            self.arg.print_log = False
-            self.print_log(f"Model:   {self.arg.model}.")
-            self.print_log(f"Weights: {self.arg.weights}.")
+            self.arg.time_keeper.print_log = False
+            self.time_keeper.print_log(f"Model:   {self.arg.model}.")
+            self.time_keeper.print_log(f"Weights: {self.arg.weights}.")
 
             self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
-            self.print_log("Done.\n")
-
-
-def str2bool(v):
-    if v.lower() in ("yes", "true", "t", "y", "1"):
-        return True
-    elif v.lower() in ("no", "false", "f", "n", "0"):
-        return False
-    else:
-        raise argparse.ArgumentTypeError("Boolean value expected.")
-
-
-def import_class(name):
-    components = name.split(".")
-    mod = __import__(components[0])
-    for comp in components[1:]:
-        mod = getattr(mod, comp)
-    return mod
+            self.time_keeper.print_log("Done.\n")
 
 
 if __name__ == "__main__":
 
-    parser = get_parser()
+    parser = get_parser(NAME_EXP)
     p = parser.parse_args()
     if p.config is not None:
         with open(p.config, "r") as f:
