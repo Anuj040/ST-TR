@@ -1,21 +1,14 @@
 #!/usr/bin/env python
 
-# import adamod
 import json
-
-# mongodb
-# import argparse
 import os
 import pickle
 import time
-from collections import OrderedDict
 
 import adamod
 import configargparse as argparse
 import networkx as nx
 import numpy as np
-
-# torch
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -24,17 +17,12 @@ from arg_types import arg_boolean
 from sklearn.metrics import confusion_matrix
 from tensorboardX import SummaryWriter
 
-incidence = np.array([])
-
 name_exp = "NTT_test"
-writer = SummaryWriter("./" + name_exp)
-use_gpu = True
-device = torch.device("cuda:0" if torch.cuda.is_available() and use_gpu else "cpu")
-
-# np.random.seed(13696642)
-# torch.manual_seed(13696642)
+writer = SummaryWriter(f"./{name_exp}")
 np.random.seed(13696641)
 torch.manual_seed(13696641)
+
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def get_parser():
@@ -45,7 +33,7 @@ def get_parser():
     )
     parser.add_argument("--val_split", type=int, default=0.2)
     parser.add_argument("--data_dir", type=str)
-    parser.add_argument("--log_dir", type=str, default="./checkpoints/" + name_exp)
+    parser.add_argument("--log_dir", type=str, default=f"checkpoints/{name_exp}")
     parser.add_argument("--exp_name", type=str, default=name_exp)
     parser.add_argument("--num_workers", type=int, default=10)
     parser.add_argument("--clip_grad_norm", type=float, default=0.5)
@@ -267,7 +255,7 @@ class Processor:
     def load_checkpoint(self, path, filename):
         ckpt_path = os.path.join(path, filename)
 
-        checkpoint = torch.load(ckpt_path)
+        checkpoint = torch.load(ckpt_path, map_location=torch.device(DEVICE))
         self.epoch = checkpoint["epoch"]
         self.best_epoch = checkpoint["best_epoch"]
         self.best_epoch_score = checkpoint["best_epoch_score"]
@@ -288,7 +276,7 @@ class Processor:
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
 
-        self.data_loader = dict()
+        self.data_loader = {}
         self.trainLoader = Feeder(**self.arg.train_feeder_args)
         self.testLoader = Feeder(**self.arg.test_feeder_args)
 
@@ -327,35 +315,25 @@ class Processor:
         )
 
     def load_model(self):
-        output_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        self.output_device = output_device
         Model = import_class(self.arg.model)
-        self.model = Model(**self.arg.model_args, device=self.output_device).cuda(
-            output_device
-        )
-        self.loss = nn.CrossEntropyLoss().to(output_device)
+        self.model = Model(**self.arg.model_args).to(DEVICE)
+        self.loss = nn.CrossEntropyLoss().to(DEVICE)
 
         if self.arg.weights:
-            self.print_log("Load weights from {}.".format(self.arg.weights))
+            self.print_log(f"Load weights from {self.arg.weights}.")
             if ".pkl" in self.arg.weights:
                 with open(self.arg.weights, "r") as f:
                     weights = pickle.load(f)
             else:
-                weights = torch.load(self.arg.weights)
-
-            weights = OrderedDict(
-                [
-                    [k.split("module.")[-1], v.cuda(output_device)]
-                    for k, v in weights.items()
-                ]
-            )
+                weights = torch.load(
+                    self.arg.weights, map_location=torch.device(DEVICE)
+                )
 
             for w in self.arg.ignore_weights:
                 if weights.pop(w, None) is not None:
-                    self.print_log("Sucessfully Remove Weights: {}.".format(w))
+                    self.print_log(f"Sucessfully Remove Weights: {w}.")
                 else:
-                    self.print_log("Can Not Remove Weights: {}.".format(w))
+                    self.print_log(f"Can Not Remove Weights: {w}.")
 
             try:
                 self.model.load_state_dict(weights)
@@ -364,7 +342,7 @@ class Processor:
                 diff = list(set(state.keys()).difference(set(weights.keys())))
                 print("Can not find these weights:")
                 for d in diff:
-                    print("  " + d)
+                    print(f"  {d}")
                 state.update(weights)
                 self.model.load_state_dict(state)
 
@@ -391,7 +369,7 @@ class Processor:
             self.optimizer = adamod.AdaMod(
                 self.model.parameters(), lr=self.arg.base_lr, beta3=0.999
             )
-            print("I am using Adamod")
+            print("Using Adamod")
 
         else:
             raise ValueError()
@@ -401,37 +379,31 @@ class Processor:
         arg_dict = vars(self.arg)
         if not os.path.exists(self.arg.work_dir):
             os.makedirs(self.arg.work_dir)
-        with open("{}/config.yaml".format(self.arg.work_dir), "w") as f:
+        with open(f"{self.arg.work_dir}/config.yaml", "w") as f:
             yaml.dump(arg_dict, f)
 
     def adjust_learning_rate(self, epoch):
-        if self.arg.optimizer in ["SGD", "Adam", "Adamod"]:
-            lr = self.arg.base_lr
-
-            step = self.arg.step
-
-            lr = self.arg.base_lr * (
-                self.arg.base_lr ** np.sum(epoch >= np.array(step))
-            )
-
-            for param_group in self.optimizer.param_groups:
-                param_group["lr"] = lr
-            return lr
-        else:
+        if self.arg.optimizer not in ["SGD", "Adam", "Adamod"]:
             raise ValueError()
+
+        step = self.arg.step
+        lr = self.arg.base_lr * (self.arg.base_lr ** np.sum(epoch >= np.array(step)))
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr
+        return lr
 
     def print_time(self):
         localtime = time.asctime(time.localtime(time.time()))
-        self.print_log("Local current time :  " + localtime)
+        self.print_log(f"Local current time :  {localtime}")
 
-    def print_log(self, str, print_time=True):
+    def print_log(self, string, print_time=True):
         if print_time:
             localtime = time.asctime(time.localtime(time.time()))
-            str = "[ " + localtime + " ] " + str
-        print(str)
+            string = f"[ {localtime} ] {string}"
+        print(string)
         if self.arg.print_log:
-            with open("{}/log.txt".format(self.arg.work_dir), "a") as f:
-                print(str, file=f)
+            with open(f"{self.arg.work_dir}/log.txt", "a") as f:
+                print(string, file=f)
 
     def record_time(self):
         self.cur_time = time.time()
@@ -445,7 +417,7 @@ class Processor:
     def train(self, epoch, save_model=True):
 
         self.model.train()
-        self.print_log("Training epoch: {}".format(epoch + 1))
+        self.print_log(f"Training epoch: {epoch + 1}")
         loader = self.data_loader["train"]
         lr = self.arg.base_lr
         lr = self.adjust_learning_rate(epoch)
@@ -454,12 +426,13 @@ class Processor:
         train_correct = 0
         self.record_time()
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
+
         if not arg.accumulating_gradients:
             for batch_idx, (data, label, name) in enumerate(loader):
-                data = data.float().cuda(self.output_device)
-                label = label.long().cuda(self.output_device)
+                data = data.float().to(DEVICE)
+                label = label.long().to(DEVICE)
 
-                timer["dataloader"] = timer["dataloader"] + self.split_time()
+                timer["dataloader"] += self.split_time()
 
                 name = name[0]
                 output = self.model(data, label, name)
@@ -473,13 +446,10 @@ class Processor:
                 _, predictions = torch.max(output, 1)
                 train_total = train_total + label.size(0)
                 train_correct = train_correct + (predictions == label).sum().item()
-                acc = (train_correct / train_total) * 100
-                timer["model"] = timer["model"] + self.split_time()
+                acc = 100 * train_correct / train_total
+                timer["model"] += self.split_time()
 
-                info = {
-                    "loss-Train": loss,
-                    "accuracy-Train": acc,
-                }
+                info = {"loss-Train": loss, "accuracy-Train": acc}
 
                 # Print statistics every 100 batches
                 if (batch_idx + 1) % 200 == 0:
@@ -488,10 +458,8 @@ class Processor:
                     print("Here are the correct labels: ", label)
 
                     # Get training statistics.
-                    stats_train = "Training: Epoch [{}/{}], Step [{}], Loss: {}, Training Accuracy: {}".format(
-                        epoch, self.arg.num_epoch, batch_idx, loss.item(), acc
-                    )
-                    print("\n" + stats_train)
+                    stats_train = f"Training: Epoch [{epoch}/{self.arg.num_epoch}], Step [{batch_idx}], Loss: {loss.item()}, Training Accuracy: {acc}"
+                    print(f"\n{stats_train}")
 
                     step = epoch * len(loader) + batch_idx
 
@@ -508,18 +476,16 @@ class Processor:
                 # statistics
                 if batch_idx % self.arg.log_interval == 0:
                     self.print_log(
-                        "\tBatch({}/{}) done. Loss: {:.4f}  lr:{:.6f}".format(
-                            batch_idx, len(loader), loss.data.item(), lr
-                        )
+                        f"\tBatch({batch_idx}/{len(loader)}) done. Loss: {loss.data.item():.4f}  lr:{lr:.6f}"
                     )
-                timer["statistics"] = timer["statistics"] + self.split_time()
+                timer["statistics"] += self.split_time()
 
             # statistics of time consumption and loss
             proportion = {
-                k: "{:02d}%".format(int(round(v * 100 / sum(timer.values()))))
+                k: f"{int(round(v * 100 / sum(timer.values()))):02d}%"
                 for k, v in timer.items()
             }
-            self.print_log("\tMean training loss: {:.4f}.".format(np.mean(loss_value)))
+            self.print_log(f"\tMean training loss: {np.mean(loss_value):.4f}.")
             self.print_log(
                 "\tTime consumption: [Data]{dataloader}, [Network]{model}".format(
                     **proportion
@@ -528,12 +494,8 @@ class Processor:
 
             if True:
                 print("saving!")
-                model_path = "{}/epoch{}_model.pt".format(self.arg.work_dir, epoch + 1)
-                state_dict = self.model.state_dict()
-                weights = OrderedDict(
-                    [[k.split("module.")[-1], v.cpu()] for k, v in state_dict.items()]
-                )
-                torch.save(weights, model_path)
+                model_path = f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
+                torch.save(self.model.state_dict(), model_path)
         else:
             running_loss = 0
             running_batches = 0
@@ -546,11 +508,13 @@ class Processor:
             self.optimizer.zero_grad()
 
             for batch_idx, (data, label, name) in enumerate(loader):
+                if batch_idx > 10:
+                    break
 
-                data = data.float().cuda(self.output_device)
-                label = label.long().cuda(self.output_device)
+                data = data.float().to(DEVICE)
+                label = label.long().to(DEVICE)
 
-                timer["dataloader"] = timer["dataloader"] + self.split_time()
+                timer["dataloader"] += self.split_time()
 
                 # forward
 
@@ -564,13 +528,10 @@ class Processor:
                 _, predictions = torch.max(output, 1)
                 train_total = train_total + label.size(0)
                 train_correct = train_correct + (predictions == label).sum().item()
-                acc = (train_correct / train_total) * 100
-                timer["model"] = timer["model"] + self.split_time()
+                acc = 100 * train_correct / train_total
+                timer["model"] += self.split_time()
 
-                info = {
-                    "loss-Train": loss,
-                    "accuracy-Train": acc,
-                }
+                info = {"loss-Train": loss, "accuracy-Train": acc}
 
                 # Updating running_loss and seen samples
                 running_loss = running_loss + loss.item()
@@ -609,9 +570,7 @@ class Processor:
                         print("Here are the correct labels: ", label)
 
                         # Get training statistics.
-                        stats_train = "Training: Epoch [{}/{}], Step [{}], Loss: {}, Training Accuracy: {}".format(
-                            epoch, self.arg.num_epoch, batch_idx, loss.item(), acc
-                        )
+                        stats_train = f"Training: Epoch [{epoch}/{self.arg.num_epoch}], Step [{batch_idx}], Loss: {loss.item()}, Training Accuracy: {acc}"
                         print("\n" + stats_train)
                         step = (
                             epoch * (len(loader) / arg.optimize_every)
@@ -620,20 +579,13 @@ class Processor:
 
                         if True:
                             print("saving!")
-                            model_path = "{}/epoch{}_model.pt".format(
-                                self.arg.work_dir, epoch + 1
-                            )
-                            state_dict = self.model.state_dict()
-                            weights = OrderedDict(
-                                [
-                                    [k.split("module.")[-1], v.cpu()]
-                                    for k, v in state_dict.items()
-                                ]
+                            model_path = (
+                                f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
                             )
                             self.save_checkpoint(
                                 self.arg.work_dir, "epoch%d.ckpt" % epoch, epoch
                             )
-                            torch.save(weights, model_path)
+                            torch.save(self.model.state_dict(), model_path)
 
                         # Print tensorboard info
                         for tag, value in info.items():
@@ -654,18 +606,16 @@ class Processor:
                     # statistics
                 if batch_idx % self.arg.log_interval == 0:
                     self.print_log(
-                        "\tBatch({}/{}) done. Loss: {:.4f}  lr:{:.6f}".format(
-                            batch_idx, len(loader), loss.data.item(), lr
-                        )
+                        f"\tBatch({batch_idx}/{len(loader)}) done. Loss: {loss.data.item():.4f}  lr:{lr:.6f}"
                     )
-                timer["statistics"] = timer["statistics"] + self.split_time()
+                timer["statistics"] += self.split_time()
 
             # statistics of time consumption and loss
             proportion = {
-                k: "{:02d}%".format(int(round(v * 100 / sum(timer.values()))))
+                k: f"{int(round(v * 100 / sum(timer.values()))):02d}%"
                 for k, v in timer.items()
             }
-            self.print_log("\tMean training loss: {:.4f}.".format(np.mean(loss_value)))
+            self.print_log(f"\tMean training loss: {np.mean(loss_value):.4f}.")
             self.print_log(
                 "\tTime consumption: [Data]{dataloader}, [Network]{model}".format(
                     **proportion
@@ -675,16 +625,12 @@ class Processor:
             if True:
                 print("saving!")
                 model_path = f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
-                state_dict = self.model.state_dict()
-                weights = OrderedDict(
-                    [[k.split("module.")[-1], v.cpu()] for k, v in state_dict.items()]
-                )
                 self.save_checkpoint(self.arg.work_dir, "epoch%d.ckpt" % epoch, epoch)
-                torch.save(weights, model_path)
+                torch.save(self.model.state_dict(), model_path)
 
     def test(self, epoch, save_score=True, loader_name=["test"]):
         self.model.eval()
-        self.print_log("Eval epoch: {}".format(epoch + 1))
+        self.print_log(f"Eval epoch: {epoch + 1}")
         val_correct = 0
         val_total = 0
         conf_matrix_test = 0
@@ -695,8 +641,8 @@ class Processor:
                 loss_value = []
                 score_frag = []
                 for batch_idx, (data, label, name) in enumerate(self.data_loader[ln]):
-                    data = data.float().cuda(self.output_device)
-                    label = label.long().cuda(self.output_device)
+                    data = data.float().to(DEVICE)
+                    label = label.long().to(DEVICE)
 
                     name = name[0]
                     output = self.model(data, label, name)
@@ -729,12 +675,8 @@ class Processor:
                         labels=np.arange(self.arg.model_args["num_class"]),
                     )
                     np.save(
-                        os.path.join(
-                            "./checkpoints",
-                            name_exp,
-                            f"confusion_test_{epoch}",
-                            conf_matrix_test,
-                        )
+                        os.path.join(name_exp, f"confusion_test_{epoch}"),
+                        conf_matrix_test,
                     )
 
                 score = np.concatenate(score_frag)
@@ -744,17 +686,12 @@ class Processor:
                 score_dict = dict(zip(self.data_loader[ln].dataset.sample_name, score))
                 if True:
                     with open(
-                        "{}/epoch{}_{}_score.pkl".format(
-                            self.arg.work_dir, epoch + 1, ln
-                        ),
-                        "wb",
+                        f"{self.arg.work_dir}/epoch{epoch + 1}_{ln}_score.pkl", "wb"
                     ) as f:
                         pickle.dump(score_dict, f)
 
                 self.print_log(
-                    "\tMean {} loss of {} batches: {}.".format(
-                        ln, len(self.data_loader[ln]), np.mean(loss_value)
-                    )
+                    f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
                 )
 
                 if arg.display_recall_precision:
@@ -763,9 +700,7 @@ class Processor:
                     ].dataset.calculate_recall_precision(score)
                     for i in range(len(precision)):
                         self.print_log(
-                            "\tClass{} Precision: {:.2f}%, Recall: {:.2f}%".format(
-                                i + 1, 100 * precision[i], 100 * recall[i]
-                            )
+                            f"\tClass{i + 1} Precision: {100 * precision[i]:.2f}%, Recall: {100 * recall[i]:.2f}%"
                         )
 
                 for k in self.arg.show_topk:
@@ -775,46 +710,28 @@ class Processor:
                         )
                         for i in range(score.shape[1]):
                             self.print_log(
-                                "\tClass{} Top{}: {:.2f}%".format(
-                                    i + 1, k, 100 * accuracy[i]
-                                )
+                                f"\tClass{i + 1} Top{k}: {100 * accuracy[i]:.2f}%"
                             )
                         self.print_log(
-                            "\tTop{}: {:.2f}%".format(
-                                k, 100 * sum(accuracy) / len(accuracy)
-                            )
+                            f"\tTop{k}: {100 * sum(accuracy) / len(accuracy):.2f}%"
                         )
                     else:
                         self.print_log(
-                            "\tTop{}: {:.2f}%".format(
-                                k, 100 * self.data_loader[ln].dataset.top_k(score, k)
-                            )
+                            "\tTop{k}: {100 * self.data_loader[ln].dataset.top_k(score, k):.2f}%"
                         )
 
                 print("Here are the just predicted labels: ", predictions)
                 print("Here are the correct labels: ", label)
                 print("Total samples seen so far: ", val_total)
 
-                stats_val = "Testing: Epoch [{}/{}], Samples [{}/{}], Loss: {}, Testing Accuracy: {}".format(
-                    epoch,
-                    self.arg.num_epoch,
-                    val_correct,
-                    val_total,
-                    loss.item(),
-                    val_accuracy,
-                )
+                stats_val = f"Testing: Epoch [{epoch}/{self.arg.num_epoch}], Samples [{val_correct}/{val_total}], Loss: {loss.item()}, Testing Accuracy: {val_accuracy}"
 
-                print("\n" + stats_val)
+                print(f"\n{stats_val}")
 
                 for i in range(0, self.arg.model_args["num_class"]):
                     if class_total[i] != 0:
                         print(
-                            "Accuracy of {} : {} / {} = {} %".format(
-                                i + 1,
-                                int(class_correct[i]),
-                                int(class_total[i]),
-                                int(100 * class_correct[i] / class_total[i]),
-                            )
+                            f"Accuracy of {i + 1} : {int(class_correct[i])} / {int(class_total[i])} = {int(100 * class_correct[i] / class_total[i])} %"
                         )
 
                 # Calculates the confusion matrix
@@ -834,11 +751,11 @@ class Processor:
                     #     # logger.scalar_summary(tag, value, epoch + 1)
                     writer.add_scalar(tag, value, step)
 
-        print("\n" + stats_val)
+        print(f"\n{stats_val}")
 
     def val(self, epoch, save_score=False, loader_name=["val"]):
         self.model.eval()
-        self.print_log("Eval epoch: {}".format(epoch + 1))
+        self.print_log(f"Eval epoch: {epoch + 1}")
         val_correct = 0
         val_total = 0
         class_correct = list(0.0 for i in range(0, self.arg.model_args["num_class"]))
@@ -848,8 +765,8 @@ class Processor:
                 loss_value = []
                 score_frag = []
                 for batch_idx, (data, label, name) in enumerate(self.data_loader[ln]):
-                    data = data.float().cuda(self.output_device)
-                    label = label.long().cuda(self.output_device)
+                    data = data.float().to(DEVICE)
+                    label = label.long().to(DEVICE)
 
                     output = self.model(data, label, name)
                     loss = self.loss(output, label)
@@ -881,35 +798,21 @@ class Processor:
                 np.concatenate(score_frag)
 
                 self.print_log(
-                    "\tMean {} loss of {} batches: {}.".format(
-                        ln, len(self.data_loader[ln]), np.mean(loss_value)
-                    )
+                    f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
                 )
 
                 print("Here are the just predicted labels: ", predictions)
                 print("Here are the correct labels: ", label)
                 print("Total samples seen so far: ", val_total)
 
-                stats_val = "Validation: Epoch [{}/{}], Samples [{}/{}], Loss: {}, Validation Accuracy: {}".format(
-                    epoch,
-                    self.arg.num_epoch,
-                    val_correct,
-                    val_total,
-                    loss.item(),
-                    val_accuracy,
-                )
+                stats_val = f"Validation: Epoch [{epoch}/{self.arg.num_epoch}], Samples [{val_correct}/{val_total}], Loss: {loss.item()}, Validation Accuracy: {val_accuracy}"
 
                 print("\n" + stats_val)
 
                 for i in range(0, self.arg.model_args["num_class"]):
                     if class_total[i] != 0:
                         print(
-                            "Accuracy of {} : {} / {} = {} %".format(
-                                i + 1,
-                                int(class_correct[i]),
-                                int(class_total[i]),
-                                int(100 * class_correct[i] / class_total[i]),
-                            )
+                            f"Accuracy of {i + 1} : {int(class_correct[i])} / {int(class_total[i])} = {int(100 * class_correct[i] / class_total[i])} %"
                         )
 
                 #
@@ -940,7 +843,7 @@ class Processor:
         print("Layer params: ", layer_params)
 
         if self.arg.phase == "train":
-            self.print_log("Parameters:\n{}\n".format(str(vars(self.arg))))
+            self.print_log(f"Parameters:\n{str(vars(self.arg))}\n")
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
 
                 save_model = ((epoch + 1) % self.arg.save_interval == 0) or (
@@ -973,9 +876,9 @@ class Processor:
 
             for w in self.arg.ignore_weights:
                 if weights.pop(w, None) is not None:
-                    self.print_log("Sucessfully Remove Weights: {}.".format(w))
+                    self.print_log(f"Sucessfully Remove Weights: {w}.")
                 else:
-                    self.print_log("Can Not Remove Weights: {}.".format(w))
+                    self.print_log(f"Can Not Remove Weights: {w}.")
 
             try:
                 self.model.load_state_dict(weights)
@@ -994,8 +897,8 @@ class Processor:
             if self.arg.weights is None:
                 raise ValueError("Please appoint --weights.")
             self.arg.print_log = False
-            self.print_log("Model:   {}.".format(self.arg.model))
-            self.print_log("Weights: {}.".format(self.arg.weights))
+            self.print_log(f"Model:   {self.arg.model}.")
+            self.print_log(f"Weights: {self.arg.weights}.")
 
             self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
             self.print_log("Done.\n")
@@ -1028,7 +931,7 @@ if __name__ == "__main__":
         key = vars(p).keys()
         for k in default_arg.keys():
             if k not in key:
-                print("WRONG ARG: {}".format(k))
+                print(f"WRONG ARG: {k}")
                 assert k in key
         parser.set_defaults(**default_arg)
 
