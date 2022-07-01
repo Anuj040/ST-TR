@@ -234,5 +234,11 @@ def get_parser(exp_name: str):
         default=False,
         help="if ture, recall and precision by category  will be displayed",
     )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default=None,
+        help="mixed",
+    )
 
     return parser

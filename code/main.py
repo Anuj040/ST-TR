@@ -14,9 +14,15 @@ import yaml
 from argument_parser import get_parser
 from sklearn.metrics import confusion_matrix
 from tensorboardX import SummaryWriter
+from torch.cuda.amp import GradScaler
 from utils.misc import import_class, save_arg
 from utils.time_utils import TimeKeeper
-from utils.train_utils import adjust_learning_rate, opt_update, save_checkpoint
+from utils.train_utils import (
+    adjust_learning_rate,
+    opt_update,
+    save_checkpoint,
+    scaled_opt_update,
+)
 
 NAME_EXP = "NTT_test"
 writer = SummaryWriter(f"./{NAME_EXP}")
@@ -159,7 +165,9 @@ class Processor:
         else:
             raise ValueError()
 
-    def train(self, epoch: int, save_model: bool = True) -> None:
+    def train(
+        self, epoch: int, save_model: bool = True, scaler: GradScaler = None
+    ) -> None:
 
         self.model.train()
         self.time_keeper.print_log(f"Training epoch: [{epoch+1}/{self.arg.num_epoch}]")
@@ -190,8 +198,13 @@ class Processor:
             timer["dataloader"] += self.time_keeper.split_time()
 
             # forward
-            output = self.model(data, label)
-            loss = self.loss(output, label)
+            if scaler is not None:
+                with torch.cuda.amp.autocast(enabled=True):
+                    output = self.model(data, label)
+                    loss = self.loss(output, label)
+            else:
+                output = self.model(data, label)
+                loss = self.loss(output, label)
             loss_value.append(loss.item())
 
             # Metrics
@@ -199,14 +212,23 @@ class Processor:
             train_total += label.size(0)
             train_correct += (predictions == label).sum().item()
             acc = 100 * train_correct / train_total
-            timer["model"] += self.time_keeper.split_time()
 
             # backward
             loss /= running_optimize_every
-            loss.backward()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
+            timer["model"] += self.time_keeper.split_time()
+
             if (batch_idx + 1) % running_optimize_every == 0:
                 # Weight update
-                opt_update(self.optimizer, self.model, arg.clip_grad_norm)
+                if scaler is not None:
+                    scaled_opt_update(
+                        scaler, self.optimizer, self.model, arg.clip_grad_norm
+                    )
+                else:
+                    opt_update(self.optimizer, self.model, arg.clip_grad_norm)
 
                 # Print statistics every 'n' batches
                 if (real_batch_index + 1) % self.arg.log_interval == 0:
@@ -240,8 +262,8 @@ class Processor:
             timer,
             loss_value,
         )
-        print("Here are the just predicted labels: ", predictions)
-        print("Here are the correct labels: ", label)
+        print(f"Here are the just predicted labels: {predictions}")
+        print(f"Here are the correct labels: {label}")
 
     def train_logging(
         self,
@@ -396,8 +418,7 @@ class Processor:
                 stats_val = f"Testing: Epoch [{epoch}/{self.arg.num_epoch}], Samples [{val_correct}/{val_total}], Loss: {loss.item()}, Testing Accuracy: {val_accuracy}"
 
                 print(f"\n{stats_val}")
-
-                for i in range(0, self.arg.model_args["num_class"]):
+                for i in range(self.arg.model_args["num_class"]):
                     if class_total[i] != 0:
                         print(
                             f"Accuracy of {i + 1} : {int(class_correct[i])} / {int(class_total[i])} = {int(100 * class_correct[i] / class_total[i])} %"
@@ -444,10 +465,9 @@ class Processor:
                     )
                     val_accuracy = (val_correct / val_total) * 100
                     c = (label == predictions.squeeze()).float()
-                    (c).float().mean()
 
                     # Calculating validation accuracy for each class
-                    for l in range(0, label.size(0)):
+                    for l in range(label.size(0)):
                         class_label = label[l]
                         class_correct[class_label - 1] = (
                             class_correct[class_label - 1] + c[l]
@@ -473,19 +493,17 @@ class Processor:
 
                 print("\n" + stats_val)
 
-                for i in range(0, self.arg.model_args["num_class"]):
+                for i in range(self.arg.model_args["num_class"]):
                     if class_total[i] != 0:
                         print(
                             f"Accuracy of {i + 1} : {int(class_correct[i])} / {int(class_total[i])} = {int(100 * class_correct[i] / class_total[i])} %"
                         )
 
-                #
                 step = (epoch + 1) * (
                     len(self.data_loader["train"]) / (arg.optimize_every)
                 )
 
                 for tag, value in info.items():
-                    #     # logger.scalar_summary(tag, value, epoch + 1)
                     writer.add_scalar(tag, value, step)
 
         print(f"\n{stats_val}")
@@ -502,23 +520,25 @@ class Processor:
             p.numel() for p in self.model.parameters() if p.requires_grad
         )
         layer_params = sum(p.view(-1).shape[0] for p in self.model.parameters())
-        print("Params: ", pytorch_total_params)
-        print("Layer params: ", layer_params)
+        print(f"Params: {pytorch_total_params}")
+        print(f"Layer params: {layer_params}")
 
         if self.arg.phase == "train":
             patience = 50
             self.time_keeper.print_log(f"Parameters:\n{vars(self.arg)}\n")
+            scaler = (
+                torch.cuda.amp.GradScaler() if self.arg.precision == "amp" else None
+            )
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
 
                 save_model = ((epoch + 1) % self.arg.save_interval == 0) or (
                     epoch + 1 == self.arg.num_epoch
                 )
-                print(save_model)
                 eval_model = ((epoch + 1) % self.arg.eval_interval == 0) or (
                     epoch + 1 == self.arg.num_epoch
                 )
 
-                self.train(epoch, save_model=save_model)
+                self.train(epoch, save_model=save_model, scaler=scaler)
                 if eval_model:
                     accuracy = self.val(
                         epoch, save_score=self.arg.save_score, loader_name=["val"]
@@ -545,7 +565,7 @@ class Processor:
 
             try:
                 self.model.load_state_dict(weights)
-            except:
+            except Exception:
                 state = self.model.state_dict()
                 diff = list(set(state.keys()).difference(set(weights.keys())))
                 print("Can not find these weights:")
@@ -553,7 +573,7 @@ class Processor:
                     print(f"  {d}")
                 state.update(weights)
                 self.model.load_state_dict(state)
-            self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
+            # self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
             self.time_keeper.print_log("Done.\n")
 
         elif self.arg.phase == "test":
