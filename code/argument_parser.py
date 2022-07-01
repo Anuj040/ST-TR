@@ -1,4 +1,5 @@
 import argparse
+import multiprocessing
 import re
 from collections import OrderedDict
 
@@ -60,7 +61,7 @@ def get_parser(exp_name: str):
     parser.add_argument("--data_dir", type=str)
     parser.add_argument("--log_dir", type=str, default=f"checkpoints/{exp_name}")
     parser.add_argument("--exp_name", type=str, default=exp_name)
-    parser.add_argument("--num_workers", type=int, default=10)
+    parser.add_argument("--num_workers", type=int, default=multiprocessing.cpu_count())
     parser.add_argument("--clip_grad_norm", type=float, default=None)
     parser.add_argument("--writer_enabled", type=arg_boolean, default=True)
     parser.add_argument("--gcn0_flag", type=arg_boolean, default=False)

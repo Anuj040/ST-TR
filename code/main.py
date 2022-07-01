@@ -59,8 +59,12 @@ class Processor:
         Feeder = import_class(self.arg.feeder)
 
         self.data_loader = {}
-        self.trainLoader = Feeder(**self.arg.train_feeder_args)
-        self.testLoader = Feeder(**self.arg.test_feeder_args)
+        self.trainLoader = Feeder(
+            **self.arg.train_feeder_args, channel=self.arg.model_args["channel"]
+        )
+        self.testLoader = Feeder(
+            **self.arg.test_feeder_args, channel=self.arg.model_args["channel"]
+        )
 
         print(self.trainLoader == self.testLoader)
         if arg.validation_split:
@@ -211,8 +215,6 @@ class Processor:
                     self.train_logging(
                         epoch,
                         batch_idx,
-                        predictions,
-                        label,
                         step,
                         tot_num_batches,
                         loss,
@@ -230,8 +232,6 @@ class Processor:
         self.train_logging(
             epoch,
             batch_idx,
-            predictions,
-            label,
             step,
             tot_num_batches,
             loss,
@@ -240,13 +240,13 @@ class Processor:
             timer,
             loss_value,
         )
+        print("Here are the just predicted labels: ", predictions)
+        print("Here are the correct labels: ", label)
 
     def train_logging(
         self,
         epoch: int,
         batch_idx: int,
-        predictions: torch.Tensor,
-        label: torch.Tensor,
         step: int,
         total_batches: int,
         loss,
@@ -255,8 +255,6 @@ class Processor:
         timer: dict = None,
         loss_value: list = None,
     ) -> None:
-        print("Here are the just predicted labels: ", predictions)
-        print("Here are the correct labels: ", label)
 
         # Get training statistics.
         self.time_keeper.print_log(
@@ -286,17 +284,17 @@ class Processor:
                     **proportion
                 )
             )
-        print("saving!")
-        model_path = f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
-        state_dict = {
-            "epoch": epoch,
-            "best_epoch": self.best_epoch,
-            "best_epoch_score": self.best_accuracy,
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-        }
-        save_checkpoint(self.arg.work_dir, f"epoch{epoch+1}.ckpt", state_dict)
-        torch.save(self.model.state_dict(), model_path)
+            print("saving!")
+            model_path = f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
+            state_dict = {
+                "epoch": epoch,
+                "best_epoch": self.best_epoch,
+                "best_epoch_score": self.best_accuracy,
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+            }
+            save_checkpoint(self.arg.work_dir, f"epoch{epoch+1}.ckpt", state_dict)
+            torch.save(self.model.state_dict(), model_path)
 
     def test(self, epoch, save_score=True, loader_name=["test"]):
         self.model.eval()
