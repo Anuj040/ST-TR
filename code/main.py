@@ -2,6 +2,7 @@
 
 import os
 import pickle
+from typing import List
 
 import adamod
 import networkx as nx
@@ -66,7 +67,6 @@ class Processor:
             **self.arg.test_feeder_args, channel=self.arg.model_args["channel"]
         )
 
-        print(self.trainLoader == self.testLoader)
         if arg.validation_split:
             val_size = int(0.2 * len(self.trainLoader))
 
@@ -80,20 +80,20 @@ class Processor:
                 dataset=self.trainLoader,
                 batch_size=self.arg.batch_size,
                 shuffle=True,
-                num_workers=self.arg.num_worker,
+                num_workers=self.arg.num_workers,
             )
 
         self.data_loader["val"] = torch.utils.data.DataLoader(
             dataset=self.testLoader,
             batch_size=self.arg.test_batch_size,
             shuffle=False,
-            num_workers=self.arg.num_worker,
+            num_workers=self.arg.num_workers,
         )
         self.data_loader["test"] = torch.utils.data.DataLoader(
             dataset=self.testLoader,
             batch_size=self.arg.test_batch_size,
             shuffle=False,
-            num_workers=self.arg.num_worker,
+            num_workers=self.arg.num_workers,
         )
 
     def load_model(self) -> None:
@@ -296,7 +296,9 @@ class Processor:
             save_checkpoint(self.arg.work_dir, f"epoch{epoch+1}.ckpt", state_dict)
             torch.save(self.model.state_dict(), model_path)
 
-    def test(self, epoch, save_score=True, loader_name=["test"]):
+    def test(self, epoch: int, save_score: bool = True, loader_name: List[str] = None):
+        if loader_name is None:
+            loader_name = ["test"]
         self.model.eval()
         self.time_keeper.print_log(f"Eval epoch: {epoch + 1}")
         val_correct = 0
@@ -494,7 +496,6 @@ class Processor:
         if not self.arg.training:
             self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
 
-        patience = 50
         patient_counter = 0
 
         pytorch_total_params = sum(
@@ -505,6 +506,7 @@ class Processor:
         print("Layer params: ", layer_params)
 
         if self.arg.phase == "train":
+            patience = 50
             self.time_keeper.print_log(f"Parameters:\n{vars(self.arg)}\n")
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
 
@@ -530,8 +532,7 @@ class Processor:
                     if patient_counter == patience:
                         print("Early stopped!")
                         break
-                else:
-                    pass
+
             load_model_path = os.path.join(NAME_EXP, f"epoch{epoch+1}_model.pt")
             self.time_keeper.print_log(f"Load weights from {load_model_path}.")
             weights = torch.load(load_model_path)
@@ -549,7 +550,7 @@ class Processor:
                 diff = list(set(state.keys()).difference(set(weights.keys())))
                 print("Can not find these weights:")
                 for d in diff:
-                    print("  " + d)
+                    print(f"  {d}")
                 state.update(weights)
                 self.model.load_state_dict(state)
             self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
