@@ -15,7 +15,7 @@ from sklearn.metrics import confusion_matrix
 from tensorboardX import SummaryWriter
 from utils.misc import import_class, save_arg
 from utils.time_utils import TimeKeeper
-from utils.train_utils import adjust_learning_rate, save_checkpoint
+from utils.train_utils import adjust_learning_rate, opt_update, save_checkpoint
 
 NAME_EXP = "NTT_test"
 writer = SummaryWriter(f"./{NAME_EXP}")
@@ -41,7 +41,6 @@ class Processor:
         save_arg(arg)
 
         self.best_epoch = 0
-        self.seen = 0
         self.best_accuracy = 0
         self.params = arg
         self.num_joints = 25
@@ -71,11 +70,7 @@ class Processor:
                 self.trainLoader, [len(self.trainLoader) - val_size, val_size]
             )
 
-        # print("Train size: ", len(self.trainLoaderNew))
-        # print("Test size: ", len(self.testLoaderNew))
-
         # FIX ME SHUFFLE
-
         if self.arg.phase == "train":
             self.data_loader["train"] = torch.utils.data.DataLoader(
                 dataset=self.trainLoader,
@@ -97,7 +92,7 @@ class Processor:
             num_workers=self.arg.num_worker,
         )
 
-    def load_model(self):
+    def load_model(self) -> None:
         Model = import_class(self.arg.model)
         # self.model = Model(**self.arg.model_args).to(DEVICE)
         self.model = nn.DataParallel(Model(**self.arg.model_args).to(DEVICE))
@@ -121,7 +116,7 @@ class Processor:
 
             try:
                 self.model.load_state_dict(weights)
-            except:
+            except Exception:
                 state = self.model.state_dict()
                 diff = list(set(state.keys()).difference(set(weights.keys())))
                 print("Can not find these weights:")
@@ -160,10 +155,10 @@ class Processor:
         else:
             raise ValueError()
 
-    def train(self, epoch, save_model=True):
+    def train(self, epoch: int, save_model: bool = True) -> None:
 
         self.model.train()
-        self.time_keeper.print_log(f"Training epoch: {epoch + 1}")
+        self.time_keeper.print_log(f"Training epoch: [{epoch+1}/{self.arg.num_epoch}]")
         loader = self.data_loader["train"]
         lr = adjust_learning_rate(self.arg, self.optimizer, epoch)
         loss_value = []
@@ -175,223 +170,133 @@ class Processor:
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
 
         if not arg.accumulating_gradients:
-            for batch_idx, (data, label, name) in enumerate(loader):
-                data = data.float().to(DEVICE)
-                label = label.long().to(DEVICE)
+            arg.optimize_every == 1
 
-                timer["dataloader"] += self.time_keeper.split_time()
+        running_batches = 0
+        real_batch_index = 0
+        tot_num_batches = len(loader)
+        running_optimize_every = min(
+            arg.optimize_every, tot_num_batches - running_batches
+        )
+        self.optimizer.zero_grad()
+        for batch_idx, (data, label, _) in enumerate(loader):
 
-                name = name[0]
-                output = self.model(data, label, name)
-                loss = self.loss(output, label)
+            data = data.float().to(DEVICE)
+            label = label.long().to(DEVICE)
+            timer["dataloader"] += self.time_keeper.split_time()
 
-                # backward
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                loss_value.append(loss.data.item())
-                _, predictions = torch.max(output, 1)
-                train_total = train_total + label.size(0)
-                train_correct = train_correct + (predictions == label).sum().item()
-                acc = 100 * train_correct / train_total
-                timer["model"] += self.time_keeper.split_time()
+            # forward
+            output = self.model(data, label)
+            loss = self.loss(output, label)
+            loss_value.append(loss.item())
 
-                info = {"loss-Train": loss, "accuracy-Train": acc}
+            # Metrics
+            _, predictions = torch.max(output, 1)
+            train_total += label.size(0)
+            train_correct += (predictions == label).sum().item()
+            acc = 100 * train_correct / train_total
+            timer["model"] += self.time_keeper.split_time()
 
-                # Print statistics every 100 batches
-                if (batch_idx + 1) % 200 == 0:
-                    print("Total samples seen so far: ", train_total)
-                    print("Here are the just predicted labels: ", predictions)
-                    print("Here are the correct labels: ", label)
+            # backward
+            loss /= running_optimize_every
+            loss.backward()
+            if (batch_idx + 1) % running_optimize_every == 0:
+                # Weight update
+                opt_update(self.optimizer, self.model, arg.clip_grad_norm)
 
-                    # Get training statistics.
-                    stats_train = f"Training: Epoch [{epoch}/{self.arg.num_epoch}], Step [{batch_idx}], Loss: {loss.item()}, Training Accuracy: {acc}"
-                    print(f"\n{stats_train}")
+                # Print statistics every 'n' batches
+                if (real_batch_index + 1) % self.arg.log_interval == 0:
+                    step = epoch * (len(loader) / arg.optimize_every) + real_batch_index
 
-                    step = epoch * len(loader) + batch_idx
-
-                    # Print tensorboard info
-                    for tag, value in info.items():
-                        writer.add_scalar(tag, value, step)
-
-                    for name, param in self.model.named_parameters():
-                        if param.requires_grad and param.grad is not None:
-                            writer.add_scalar(
-                                "gradients/" + name, param.grad.norm(2).item(), step
-                            )
-
-                # statistics
-                if batch_idx % self.arg.log_interval == 0:
-                    self.time_keeper.print_log(
-                        f"\tBatch({batch_idx}/{len(loader)}) done. Loss: {loss.data.item():.4f}  lr:{lr:.6f}"
+                    self.train_logging(
+                        epoch,
+                        batch_idx,
+                        predictions,
+                        label,
+                        step,
+                        tot_num_batches,
+                        loss,
+                        acc,
+                        lr,
                     )
-                timer["statistics"] += self.time_keeper.split_time()
 
-            # statistics of time consumption and loss
+                running_optimize_every = min(
+                    arg.optimize_every, tot_num_batches - (batch_idx + 1)
+                )
+                real_batch_index += 1
+
+            timer["statistics"] += self.time_keeper.split_time()
+
+        self.train_logging(
+            epoch,
+            batch_idx,
+            predictions,
+            label,
+            step,
+            tot_num_batches,
+            loss,
+            acc,
+            lr,
+            timer,
+            loss_value,
+        )
+
+    def train_logging(
+        self,
+        epoch: int,
+        batch_idx: int,
+        predictions: torch.Tensor,
+        label: torch.Tensor,
+        step: int,
+        total_batches: int,
+        loss,
+        acc: float,
+        lr: float,
+        timer: dict = None,
+        loss_value: list = None,
+    ) -> None:
+        print("Here are the just predicted labels: ", predictions)
+        print("Here are the correct labels: ", label)
+
+        # Get training statistics.
+        self.time_keeper.print_log(
+            f"\tBatch({batch_idx + 1}/{total_batches}) done. Loss: {loss.item():.4f}, Training Accuracy: {acc:.4f}  lr:{lr:.6f}"
+        )
+
+        # Print tensorboard info
+        info = {"loss-Train": loss, "accuracy-Train": acc}
+        for tag, value in info.items():
+            writer.add_scalar(tag, value, step)
+
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and param.grad is not None:
+                writer.add_scalar(f"gradients/{name}", param.grad.norm(2).item(), step)
+        # statistics of time consumption and loss
+        if loss_value is not None:
+            self.time_keeper.print_log(
+                f"\tMean training loss: {np.mean(loss_value):.4f}."
+            )
+        if timer is not None:
             proportion = {
                 k: f"{int(round(v * 100 / sum(timer.values()))):02d}%"
                 for k, v in timer.items()
             }
             self.time_keeper.print_log(
-                f"\tMean training loss: {np.mean(loss_value):.4f}."
-            )
-            self.time_keeper.print_log(
                 "\tTime consumption: [Data]{dataloader}, [Network]{model}".format(
                     **proportion
                 )
             )
-
-            if True:
-                print("saving!")
-                model_path = f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
-                torch.save(self.model.state_dict(), model_path)
-        else:
-            running_loss = 0
-            running_batches = 0
-            real_batch_index = 0
-            running_samples = 0
-            tot_num_batches = len(loader)
-            running_optimize_every = min(
-                arg.optimize_every, tot_num_batches - running_batches
-            )
-            self.optimizer.zero_grad()
-
-            for batch_idx, (data, label, name) in enumerate(loader):
-                if batch_idx > 10:
-                    break
-
-                data = data.float().to(DEVICE)
-                label = label.long().to(DEVICE)
-
-                timer["dataloader"] += self.time_keeper.split_time()
-
-                # forward
-
-                output = self.model(data, label, name)
-                loss = self.loss(output, label)
-                loss_norm = loss / running_optimize_every
-
-                # backward
-                loss_norm.backward()
-
-                _, predictions = torch.max(output, 1)
-                train_total = train_total + label.size(0)
-                train_correct = train_correct + (predictions == label).sum().item()
-                acc = 100 * train_correct / train_total
-                timer["model"] += self.time_keeper.split_time()
-
-                info = {"loss-Train": loss, "accuracy-Train": acc}
-
-                # Updating running_loss and seen samples
-                running_loss = running_loss + loss.item()
-                running_batches = running_batches + 1
-                self.seen = self.seen + label.size(0)
-                running_samples = running_samples + label.size(0)
-
-                if running_batches % running_optimize_every == 0:
-
-                    if arg.clip:
-                        torch.nn.utils.clip_grad.clip_grad_norm_(
-                            self.model.parameters(), 1
-                        )
-
-                    # Step
-                    self.optimizer.step()
-                    loss_value.append(loss.data.item())
-
-                    step = (
-                        epoch * (len(loader) / (arg.optimize_every)) + real_batch_index
-                    )
-
-                    for name, param in self.model.named_parameters():
-                        if param.requires_grad and param.grad is not None:
-                            # logger.scalar_summary("gradients/" + name, param.grad.norm(2).item(), global_step)
-                            writer.add_scalar(
-                                "gradients/" + name, param.grad.norm(2).item(), step
-                            )
-
-                    # Print statistics every 100 batches
-                    if (real_batch_index + 1) % 200 == 0:
-                        # accuracy = self.evaluate(epoch, epochs, self.sub_dataVal)
-
-                        print("Total samples seen so far: ", train_total)
-                        print("Here are the just predicted labels: ", predictions)
-                        print("Here are the correct labels: ", label)
-
-                        # Get training statistics.
-                        stats_train = f"Training: Epoch [{epoch}/{self.arg.num_epoch}], Step [{batch_idx}], Loss: {loss.item()}, Training Accuracy: {acc}"
-                        print("\n" + stats_train)
-                        step = (
-                            epoch * (len(loader) / arg.optimize_every)
-                            + real_batch_index
-                        )
-
-                        if True:
-                            print("saving!")
-                            model_path = (
-                                f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
-                            )
-                            state_dict = {
-                                "epoch": epoch,
-                                "best_epoch": self.best_epoch,
-                                "best_epoch_score": self.best_accuracy,
-                                "model_state_dict": self.model.state_dict(),
-                                "optimizer_state_dict": self.optimizer.state_dict(),
-                            }
-                            save_checkpoint(
-                                self.arg.work_dir, f"epoch{epoch+1}.ckpt", state_dict
-                            )
-                            torch.save(self.model.state_dict(), model_path)
-
-                        # Print tensorboard info
-                        for tag, value in info.items():
-                            writer.add_scalar(tag, value, step)
-
-                        for name, param in self.model.named_parameters():
-                            if param.requires_grad and param.grad is not None:
-                                writer.add_scalar(
-                                    "gradients/" + name, param.grad.norm(2).item(), step
-                                )
-
-                    self.optimizer.zero_grad()
-                    running_optimize_every = min(
-                        arg.optimize_every, tot_num_batches - running_batches
-                    )
-                    real_batch_index = real_batch_index + 1
-
-                    # statistics
-                if batch_idx % self.arg.log_interval == 0:
-                    self.time_keeper.print_log(
-                        f"\tBatch({batch_idx}/{len(loader)}) done. Loss: {loss.data.item():.4f}  lr:{lr:.6f}"
-                    )
-                timer["statistics"] += self.time_keeper.split_time()
-
-            # statistics of time consumption and loss
-            proportion = {
-                k: f"{int(round(v * 100 / sum(timer.values()))):02d}%"
-                for k, v in timer.items()
-            }
-            self.time_keeper.print_log(
-                f"\tMean training loss: {np.mean(loss_value):.4f}."
-            )
-            self.time_keeper.print_log(
-                "\tTime consumption: [Data]{dataloader}, [Network]{model}".format(
-                    **proportion
-                )
-            )
-
-            if True:
-                print("saving!")
-                model_path = f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
-                state_dict = {
-                    "epoch": epoch,
-                    "best_epoch": self.best_epoch,
-                    "best_epoch_score": self.best_accuracy,
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": self.optimizer.state_dict(),
-                }
-                save_checkpoint(self.arg.work_dir, f"epoch{epoch+1}.ckpt", state_dict)
-                torch.save(self.model.state_dict(), model_path)
+        print("saving!")
+        model_path = f"{self.arg.work_dir}/epoch{epoch + 1}_model.pt"
+        state_dict = {
+            "epoch": epoch,
+            "best_epoch": self.best_epoch,
+            "best_epoch_score": self.best_accuracy,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+        }
+        save_checkpoint(self.arg.work_dir, f"epoch{epoch+1}.ckpt", state_dict)
+        torch.save(self.model.state_dict(), model_path)
 
     def test(self, epoch, save_score=True, loader_name=["test"]):
         self.model.eval()
@@ -406,12 +311,11 @@ class Processor:
             for ln in loader_name:
                 loss_value = []
                 score_frag = []
-                for batch_idx, (data, label, name) in enumerate(self.data_loader[ln]):
+                for data, label, _ in self.data_loader[ln]:
                     data = data.float().to(DEVICE)
                     label = label.long().to(DEVICE)
 
-                    name = name[0]
-                    output = self.model(data, label, name)
+                    output = self.model(data, label)
                     loss = self.loss(output, label)
                     score_frag.append(output.data.cpu().numpy())
                     loss_value.append(loss.data.item())
@@ -450,11 +354,10 @@ class Processor:
                 # Added
                 loss = np.mean(loss_value)
                 score_dict = dict(zip(self.data_loader[ln].dataset.sample_name, score))
-                if True:
-                    with open(
-                        f"{self.arg.work_dir}/epoch{epoch + 1}_{ln}_score.pkl", "wb"
-                    ) as f:
-                        pickle.dump(score_dict, f)
+                with open(
+                    f"{self.arg.work_dir}/epoch{epoch + 1}_{ln}_score.pkl", "wb"
+                ) as f:
+                    pickle.dump(score_dict, f)
 
                 self.time_keeper.print_log(
                     f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
@@ -500,16 +403,16 @@ class Processor:
                             f"Accuracy of {i + 1} : {int(class_correct[i])} / {int(class_total[i])} = {int(100 * class_correct[i] / class_total[i])} %"
                         )
 
-                # Calculates the confusion matrix
-                # conf_matrix = confusion_matrix(predictions.cpu(), label.cpu())
-                # print("The confusion matrix is: ", conf_matrix)
+                        # Calculates the confusion matrix
+                        # conf_matrix = confusion_matrix(predictions.cpu(), label.cpu())
+                        # print("The confusion matrix is: ", conf_matrix)
 
-                # Calculates and plots the confusion matrix
-                # df_cm = pd.DataFrame(self.conf_matrix_val, index=[i for i in range(0, 60)],
-                # columns=[i for i in range(0, 60)])
-                # conf_fig = plt.figure(figsize=(13, 10))
-                # plt.title("Confusion Matrix - Validation")
-                # sn.heatmap(df_cm, annot=True)
+                        # Calculates and plots the confusion matrix
+                        # df_cm = pd.DataFrame(self.conf_matrix_val, index=[i for i in range(0, 60)],
+                        # columns=[i for i in range(0, 60)])
+                        # conf_fig = plt.figure(figsize=(13, 10))
+                        # plt.title("Confusion Matrix - Validation")
+                        # sn.heatmap(df_cm, annot=True)
 
         print(f"\n{stats_val}")
 
@@ -525,11 +428,11 @@ class Processor:
             for ln in loader_name:
                 loss_value = []
                 score_frag = []
-                for batch_idx, (data, label, name) in enumerate(self.data_loader[ln]):
+                for data, label, _ in self.data_loader[ln]:
                     data = data.float().to(DEVICE)
                     label = label.long().to(DEVICE)
 
-                    output = self.model(data, label, name)
+                    output = self.model(data, label)
                     loss = self.loss(output, label)
                     score_frag.append(output.data.cpu().numpy())
                     loss_value.append(loss.data.item())
@@ -588,7 +491,7 @@ class Processor:
         print(f"\n{stats_val}")
         return val_accuracy
 
-    def start(self):
+    def start(self) -> None:
 
         if not self.arg.training:
             self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
@@ -599,12 +502,12 @@ class Processor:
         pytorch_total_params = sum(
             p.numel() for p in self.model.parameters() if p.requires_grad
         )
-        layer_params = sum([p.view(-1).shape[0] for p in self.model.parameters()])
+        layer_params = sum(p.view(-1).shape[0] for p in self.model.parameters())
         print("Params: ", pytorch_total_params)
         print("Layer params: ", layer_params)
 
         if self.arg.phase == "train":
-            self.time_keeper.print_log(f"Parameters:\n{str(vars(self.arg))}\n")
+            self.time_keeper.print_log(f"Parameters:\n{vars(self.arg)}\n")
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
 
                 save_model = ((epoch + 1) % self.arg.save_interval == 0) or (

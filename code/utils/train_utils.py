@@ -2,6 +2,8 @@ import os
 
 import numpy as np
 import torch
+from torch import nn
+from torch.optim import Optimizer
 
 
 def adjust_learning_rate(arg, optimizer, epoch):
@@ -26,3 +28,10 @@ def save_checkpoint(path, filename, state_dict: dict) -> None:
     except Exception as e:
         print("An error occurred while saving the checkpoint:")
         print(e)
+
+
+def opt_update(optimizer: Optimizer, model: nn.Module, clip_norm: float) -> None:
+    if clip_norm is not None:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm)
+    optimizer.step()
+    optimizer.zero_grad()
