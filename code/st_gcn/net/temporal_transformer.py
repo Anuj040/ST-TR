@@ -1,30 +1,51 @@
+""" 
+Class that implements Temporal Transformer.
+Function adapted from: https://github.com/leaderj1001/Attention-Augmented-Conv2d
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F_func
-from .net import Unit2D
-import math
-import numpy as np
-import time
 
-use_cuda = torch.cuda.is_available()
-device = torch.device("cuda" if use_cuda else "cpu")
+from .net import Unit2D
+
 dropout = False
 scale_norm = False
 save = False
 multi_matmul = False
 
-''' Class that implements Temporal Transformer.
-Function adapted from: https://github.com/leaderj1001/Attention-Augmented-Conv2d
-'''
+
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-class tcn_unit_attention(nn.Module):
-    def __init__(self, in_channels, out_channels, dv_factor, dk_factor, Nh, n,
-                 relative, only_temporal_attention, dropout, kernel_size_temporal, stride, weight_matrix,
-                 last, layer, device, more_channels, drop_connect, num_point,
-                 bn_flag=True,
-                 shape=25, visualization=False, data_normalization=True, skip_conn=True, more_relative=False):
-        super(tcn_unit_attention, self).__init__()
+class TcnUnitAttention(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        dv_factor,
+        dk_factor,
+        Nh,
+        n,
+        relative,
+        only_temporal_attention,
+        dropout,
+        kernel_size_temporal,
+        stride,
+        weight_matrix,
+        last,
+        layer,
+        more_channels,
+        drop_connect,
+        num_point,
+        bn_flag=True,
+        shape=25,
+        visualization=False,
+        data_normalization=True,
+        skip_conn=True,
+        more_relative=False,
+    ):
+        super().__init__()
+
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.layer = layer
@@ -50,13 +71,13 @@ class tcn_unit_attention(nn.Module):
         self.skip_conn = skip_conn
         self.last = last
 
-        if (not self.only_temporal_att):
-            self.dv = int(dv_factor * out_channels)
-        else:
-            self.dv = out_channels
-        if ((self.in_channels != self.out_channels) or (stride != 1)):
+        self.dv = (
+            out_channels if self.only_temporal_att else int(dv_factor * out_channels)
+        )
+        if (self.in_channels != self.out_channels) or (stride != 1):
             self.down = Unit2D(
-                self.in_channels, self.out_channels, kernel_size=1, stride=stride)
+                self.in_channels, self.out_channels, kernel_size=1, stride=stride
+            )
         else:
             self.down = None
         if self.data_normalization:
@@ -65,59 +86,83 @@ class tcn_unit_attention(nn.Module):
             self.dropout = nn.Dropout(0.25)
 
         # Temporal convolution
-        if (not self.only_temporal_att):
-            self.tcn_conv = Unit2D(in_channels, out_channels - self.dv, dropout=dropout,
-                                   kernel_size=kernel_size_temporal,
-                                   stride=self.stride)
-        if (self.more_channels):
+        if not self.only_temporal_att:
+            self.tcn_conv = Unit2D(
+                in_channels,
+                out_channels - self.dv,
+                dropout=dropout,
+                kernel_size=kernel_size_temporal,
+                stride=self.stride,
+            )
+        if self.more_channels:
 
-            self.qkv_conv = nn.Conv2d(self.in_channels, (2 * self.dk + self.dv) * self.Nh // self.num,
-                                      kernel_size=(1, stride),
-                                      stride=(1, stride),
-                                      padding=(0, int((1 - 1) / 2)))
+            self.qkv_conv = nn.Conv2d(
+                self.in_channels,
+                (2 * self.dk + self.dv) * self.Nh // self.num,
+                kernel_size=(1, stride),
+                stride=(1, stride),
+                padding=(0, 0),
+            )
+        elif self.num_point % 2 == 0:
+            self.qkv_conv = nn.Conv2d(
+                self.in_channels,
+                2 * self.dk + self.dv,
+                kernel_size=(1, 1),
+                stride=(1, stride),
+                padding=(0, 0),
+            )
         else:
-            if self.num_point % 2 != 0:
-                self.qkv_conv = nn.Conv2d(self.in_channels, 2 * self.dk + self.dv, kernel_size=(1, stride),
-                                      stride=(1, stride),
-                                      padding=(0, int((1 - 1) / 2)))
-            else:
-                self.qkv_conv = nn.Conv2d(self.in_channels, 2 * self.dk + self.dv, kernel_size=(1, 1),
-                                          stride=(1, stride),
-                                          padding=(0, int((1 - 1) / 2)))
-        if (self.more_channels):
-            self.attn_out = nn.Conv2d(self.dv * self.Nh // self.num, self.dv, kernel_size=1, stride=1)
+            self.qkv_conv = nn.Conv2d(
+                self.in_channels,
+                2 * self.dk + self.dv,
+                kernel_size=(1, stride),
+                stride=(1, stride),
+                padding=(0, 0),
+            )
+        if self.more_channels:
+            self.attn_out = nn.Conv2d(
+                self.dv * self.Nh // self.num, self.dv, kernel_size=1, stride=1
+            )
         else:
             self.attn_out = nn.Conv2d(self.dv, self.dv, kernel_size=1, stride=1)
-
-        if self.out_channels == 64:
-            frames = 300
 
         if self.out_channels == 128:
             frames = 150
 
-        if self.out_channels == 256:
+        elif self.out_channels == 256:
             frames = 75
+
+        elif self.out_channels == 64:
+            frames = 300
 
         if self.relative:
             if self.more_channels:
                 self.key_rel = nn.Parameter(
-                    torch.randn((2 * frames - 1, self.dk // self.num), requires_grad=True))
+                    torch.randn(
+                        (2 * frames - 1, self.dk // self.num), requires_grad=True
+                    )
+                )
 
             else:
                 self.key_rel = nn.Parameter(
-                    torch.randn((2 * frames - 1, self.dk // Nh), requires_grad=True))
+                    torch.randn((2 * frames - 1, self.dk // Nh), requires_grad=True)
+                )
 
         assert self.Nh != 0, "integer division or modulo by zero, Nh >= 1"
-        assert self.dk % self.Nh == 0, "dk should be divided by Nh. (example: out_channels: 20, dk: 40, Nh: 4)"
-        assert self.dv % self.Nh == 0, "dv should be divided by Nh. (example: out_channels: 20, dv: 4, Nh: 4)"
+        assert (
+            self.dk % self.Nh == 0
+        ), "dk should be divided by Nh. (example: out_channels: 20, dk: 40, Nh: 4)"
+        assert (
+            self.dv % self.Nh == 0
+        ), "dv should be divided by Nh. (example: out_channels: 20, dv: 4, Nh: 4)"
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
         # Input x
         # (batch_size, channels, time, joints)
         N, C, T, V = x.size()
         x_sum = x
 
-        if (self.data_normalization):
+        if self.data_normalization:
             x = x.permute(0, 1, 3, 2).reshape(N, C * V, T)
             x = self.data_bn(x)
             x = x.reshape(N, C, V, T).permute(0, 1, 3, 2)
@@ -126,23 +171,22 @@ class tcn_unit_attention(nn.Module):
         x = x.permute(0, 3, 1, 2).reshape(-1, C, 1, T)
 
         if scale_norm:
-            self.scale = ScaleNorm(scale=C ** 0.5)
+            self.scale = ScaleNorm(scale=C**0.5)
             x = self.scale(x)
 
-        flat_q, flat_k, flat_v, q, k, v = self.compute_flat_qkv(x, self.dk, self.dv, self.Nh)
+        flat_q, flat_k, flat_v, q, k, v = self.compute_flat_qkv(
+            x, self.dk, self.dv, self.Nh
+        )
         B, self.Nh, C, T = flat_q.size()
 
         # Calculate the scores, obtained by doing q*k
         # (batch_size, Nh, time, dkh)*(batch_size, Nh,dkh, time) =  (batch_size, Nh, time, time)
 
-        if (multi_matmul):
-            for i in range(0, 5):
-                flat_q_5 = flat_q[:, :, :, (60 * i):(60 * (i + 1))]
+        if multi_matmul:
+            for i in range(5):
+                flat_q_5 = flat_q[:, :, :, (60 * i) : (60 * (i + 1))]
                 product = torch.matmul(flat_q_5.transpose(2, 3), flat_k)
-                if (i == 0):
-                    logits = product
-                else:
-                    logits = torch.cat((logits, product), dim=2)
+                logits = product if i == 0 else torch.cat((logits, product), dim=2)
         else:
             logits = torch.matmul(flat_q.transpose(2, 3), flat_k)
 
@@ -158,8 +202,8 @@ class tcn_unit_attention(nn.Module):
         else:
             weights = F_func.softmax(logits, dim=-1)
 
-        if (self.drop_connect and self.training):
-            mask = torch.bernoulli((0.5) * torch.ones(B * self.Nh * T, device=device))
+        if self.drop_connect and self.training:
+            mask = torch.bernoulli((0.5) * torch.ones(B * self.Nh * T)).to(DEVICE)
             mask = mask.reshape(B, self.Nh, T).unsqueeze(2).expand(B, self.Nh, T, T)
             weights = weights * mask
             weights = weights / (weights.sum(3, keepdim=True) + 1e-8)
@@ -189,29 +233,21 @@ class tcn_unit_attention(nn.Module):
             if dropout:
                 attn_out = self.dropout(attn_out)
 
-                if (not self.only_temporal_att):
-                    x = self.tcn_conv(x_sum)
-                    result = torch.cat((x, attn_out), dim=1)
-                else:
-                    result = attn_out
-
-                result = result+(x_sum if (self.down is None) else self.down(x_sum))
-
-
+            if not self.only_temporal_att:
+                x = self.tcn_conv(x_sum)
+                result = torch.cat((x, attn_out), dim=1)
             else:
-                if (not self.only_temporal_att):
-                    x = self.tcn_conv(x_sum)
-                    result = torch.cat((x, attn_out), dim=1)
-                else:
-                    result = attn_out
+                result = attn_out
 
-                result = result+(x_sum if (self.down is None) else self.down(x_sum))
-
+            N, C, T, V = x_sum.size()
+            if T % 2 == 1 and self.down is not None:
+                result = F_func.pad(result, (0, 0, 0, 1), "constant", 0)
+            result = result + x_sum if self.down is None else self.down(x_sum)
 
         else:
             result = attn_out
 
-        if (self.bn_flag):
+        if self.bn_flag:
             result = self.bn(result)
         result = self.relu(result)
         return result
@@ -222,8 +258,15 @@ class tcn_unit_attention(nn.Module):
         # In this case V=1, because Temporal Transformer is applied for each joint separately
         N, C, V1, T1 = qkv.size()
         if self.more_channels:
-            q, k, v = torch.split(qkv, [dk * self.Nh // self.num, dk * self.Nh // self.num, dv * self.Nh // self.num],
-                                  dim=1)
+            q, k, v = torch.split(
+                qkv,
+                [
+                    dk * self.Nh // self.num,
+                    dk * self.Nh // self.num,
+                    dv * self.Nh // self.num,
+                ],
+                dim=1,
+            )
         else:
             q, k, v = torch.split(qkv, [dk, dk, dv], dim=1)
 
@@ -232,7 +275,7 @@ class tcn_unit_attention(nn.Module):
         v = self.split_heads_2d(v, Nh)
 
         dkh = dk // Nh
-        q = q* (dkh ** -0.5)
+        q = q * dkh**-0.5
         if self.more_channels:
 
             flat_q = torch.reshape(q, (N, Nh, dk // self.num, V1 * T1))
@@ -247,8 +290,7 @@ class tcn_unit_attention(nn.Module):
     def split_heads_2d(self, x, Nh):
         B, channels, F, V = x.size()
         ret_shape = (B, Nh, channels // Nh, F, V)
-        split = torch.reshape(x, ret_shape)
-        return split
+        return torch.reshape(x, ret_shape)
 
     def combine_heads_2d(self, x):
         batch, Nh, dv, F, V = x.size()
@@ -260,21 +302,19 @@ class tcn_unit_attention(nn.Module):
         # B, Nh, V, T, dk -> B, Nh, F, 1, dk
         q = q.permute(0, 1, 3, 4, 2)
         q = q.reshape(B, Nh, T, dk)
-        rel_logits = self.relative_logits_1d(q, self.key_rel)
-        return rel_logits
+        return self.relative_logits_1d(q, self.key_rel)
 
     def relative_logits_1d(self, q, rel_k):
         # compute relative logits along one dimension
         # (B, Nh,  1, V, channels // Nh)*(2 * K - 1, self.dk // Nh)
         # (B, Nh,  1, V, 2 * K - 1)
-        rel_logits = torch.einsum('bhld,md->bhlm', q, rel_k)
+        rel_logits = torch.einsum("bhld,md->bhlm", q, rel_k)
         rel_logits = self.rel_to_abs(rel_logits)
         B, Nh, L, L = rel_logits.size()
         return rel_logits
 
     def rel_to_abs(self, x):
         B, Nh, L, _ = x.size()
-        print(x.shape)
         col_pad = torch.zeros((B, Nh, L, 1)).to(x)
         x = torch.cat((x, col_pad), dim=3)
         flat_x = torch.reshape(x, (B, Nh, L * 2 * L))
@@ -282,7 +322,7 @@ class tcn_unit_attention(nn.Module):
         flat_x_padded = torch.cat((flat_x, flat_pad), dim=2)
 
         final_x = torch.reshape(flat_x_padded, (B, Nh, L + 1, 2 * L - 1))
-        final_x = final_x[:, :, :L, L - 1:]
+        final_x = final_x[:, :, :L, L - 1 :]
         return final_x
 
 
