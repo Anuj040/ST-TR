@@ -184,7 +184,8 @@ class Processor:
         lr = adjust_learning_rate(self.arg, self.optimizer, epoch)
         loss_value = []
         train_total = 0
-        train_correct = 0
+        train_correct1 = 0
+        train_correct2 = 0
 
         # Set the current_time
         self.time_keeper.record_time()
@@ -200,27 +201,29 @@ class Processor:
             arg.optimize_every, tot_num_batches - running_batches
         )
         self.optimizer.zero_grad()
-        for batch_idx, (data, label, _) in enumerate(loader):
-
+        for batch_idx, (data, label1, label2) in enumerate(loader):
             data = data.float().to(DEVICE)
-            label = label.to(DEVICE)
+            label1 = label1.to(DEVICE)
+            label2 = label2.to(DEVICE)
             timer["dataloader"] += self.time_keeper.split_time()
 
             # forward
             if scaler is not None:
                 with torch.cuda.amp.autocast(enabled=True):
-                    output = self.model(data, label)
-                    loss = self.loss(output, label)
+                    output1, output2 = self.model(data)
+                    loss = self.loss(output1, label1) + self.loss(output2, label2)
             else:
-                output = self.model(data, label)
-                loss = self.loss(output, label)
+                output1, output2 = self.model(data)
+                loss = self.loss(output1, label1) + self.loss(output2, label2)
             loss_value.append(loss.item())
 
             # Metrics
-            _, predictions = torch.max(output, 1)
-            train_total += label.size(0)
-            train_correct += (predictions == label).sum().item()
-            acc = 100 * train_correct / train_total
+            _, predictions1 = torch.max(output1, 1)
+            _, predictions2 = torch.max(output2, 1)
+            train_total += label1.size(0)
+            train_correct1 += (predictions1 == label1).sum().item()
+            train_correct2 += (predictions2 == label2).sum().item()
+            acc = 100 * (train_correct1 + train_correct2) / train_total / 2
 
             # backward
             loss /= running_optimize_every
@@ -271,8 +274,10 @@ class Processor:
             timer,
             loss_value,
         )
-        print(f"Here are the just predicted labels: {predictions}")
-        print(f"Here are the correct labels: {label}")
+        print(f"Here are the just predicted labels1: {predictions1}")
+        print(f"Here are the correct labels1: {label1}")
+        print(f"Here are the just predicted labels2: {predictions2}")
+        print(f"Here are the correct labels2: {label2}")
 
     def train_logging(
         self,
@@ -449,64 +454,70 @@ class Processor:
     def val(self, epoch, save_score=False, loader_name=["val"]):
         self.model.eval()
         self.time_keeper.print_log(f"Eval epoch: {epoch + 1}")
-        val_correct = 0
+        val_correct1 = 0
+        val_correct2 = 0
         val_total = 0
-        class_correct = [0.0] * self.arg.model_args["num_class"]
-        class_total = [0.0] * self.arg.model_args["num_class"]
+        class_correct = [
+            [0.0] * num_classes for num_classes in self.arg.model_args["num_class"]
+        ]
+        class_total = [
+            [0.0] * num_classes for num_classes in self.arg.model_args["num_class"]
+        ]
 
         with torch.no_grad():
             for ln in loader_name:
                 loss_value = []
-                score_frag = []
-                for data, label, _ in self.data_loader[ln]:
+                for data, label1, label2 in self.data_loader[ln]:
                     data = data.float().to(DEVICE)
-                    label = label.long().to(DEVICE)
+                    label1 = label1.to(DEVICE)
+                    label2 = label2.to(DEVICE)
 
-                    output = self.model(data, label)
-                    loss = self.loss(output, label)
-                    score_frag.append(output.data.cpu().numpy())
-                    loss_value.append(loss.data.item())
+                    output1, output2 = self.model(data)
+                    loss = self.loss(output1, label1) + self.loss(output2, label2)
+                    loss_value.append(loss.item())
 
-                    _, predictions = torch.max(output, 1)
-                    val_total = val_total + label.size(0)
-                    val_correct = (
-                        val_correct + (predictions == label).double().sum().item()
-                    )
-                    val_accuracy = (val_correct / val_total) * 100
-                    c = (label == predictions.squeeze()).float()
+                    _, predictions1 = torch.max(output1, 1)
+                    _, predictions2 = torch.max(output2, 1)
+                    val_total += label1.size(0)
+                    val_correct1 += (predictions1 == label1).sum().item()
+                    val_correct2 += (predictions2 == label2).sum().item()
+
+                    val_accuracy = 100 * (val_correct1 + val_correct2) / val_total / 2
+                    c1 = (label1 == predictions1.squeeze()).float()
+                    c2 = (label2 == predictions2.squeeze()).float()
 
                     # Calculating validation accuracy for each class
-                    for l in range(label.size(0)):
-                        class_label = label[l]
-                        class_correct[class_label - 1] = (
-                            class_correct[class_label - 1] + c[l]
-                        )
-                        class_total[class_label - 1] = class_total[class_label - 1] + 1
+                    for l in range(label1.size(0)):
+                        class_label = label1[l]
+                        class_correct[0][class_label - 1] += c1[l]
+                        class_total[0][class_label - 1] += 1
+                    for l in range(label2.size(0)):
+                        class_label = label2[l]
+                        class_correct[1][class_label - 1] += c2[l]
+                        class_total[1][class_label - 1] += 1
 
                     info = {"loss-Val": loss, "accuracy-val": val_accuracy}
-                # conf_matrix_val += confusion_matrix(predictions.cpu(), label.cpu(), labels=np.arange(self.arg.model_args['num_class']))
-                # np.save("./checkpoints/" + NAME_EXP + "/conf_val_" + str(epoch),
-                #       conf_matrix_val)
-
-                np.concatenate(score_frag)
 
                 self.time_keeper.print_log(
                     f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
                 )
 
-                print("Here are the just predicted labels: ", predictions)
-                print("Here are the correct labels: ", label)
+                print("Here are the just predicted labels: ", predictions1)
+                print("Here are the correct labels: ", label1)
+                print("Here are the just predicted labels: ", predictions2)
+                print("Here are the correct labels: ", label2)
                 print("Total samples seen so far: ", val_total)
 
-                stats_val = f"Validation: Epoch [{epoch}/{self.arg.num_epoch}], Samples [{val_correct}/{val_total}], Loss: {loss.item()}, Validation Accuracy: {val_accuracy}"
+                stats_val = f"Validation: Epoch [{epoch}/{self.arg.num_epoch}], Loss: {loss.item()}, Validation Accuracy: {val_accuracy}"
 
                 print("\n" + stats_val)
-
-                for i in range(self.arg.model_args["num_class"]):
-                    if class_total[i] != 0:
-                        print(
-                            f"Accuracy of {i + 1} : {int(class_correct[i])} / {int(class_total[i])} = {int(100 * class_correct[i] / class_total[i])} %"
-                        )
+                for ind, num_classes in enumerate(self.arg.model_args["num_class"]):
+                    print(f"class accuracies for {ind}th head")
+                    for i in range(num_classes):
+                        if class_total[ind][i] != 0:
+                            print(
+                                f"Accuracy of {i + 1} : {int(class_correct[ind][i])} / {int(class_total[ind][i])} = {int(100 * class_correct[ind][i] / class_total[ind][i])} %"
+                            )
 
                 step = (epoch + 1) * (
                     len(self.data_loader["train"]) / (arg.optimize_every)

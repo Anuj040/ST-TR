@@ -1,30 +1,43 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
-import numpy as np
-import math
-import tqdm
-from .temporal_transformer_windowed import tcn_unit_attention_block
-from .temporal_transformer import tcn_unit_attention
+from utils.misc import import_class
 
 from .gcn_attention import gcn_unit_attention
-from .net import Unit2D, conv_init, import_class
-from .unit_gcn import unit_gcn
+from .net import Unit2D
+from .temporal_transformer import TcnUnitAttention
+from .temporal_transformer_windowed import TcnUnitAttentionBlock
 from .unit_agcn import unit_agcn
+from .unit_gcn import unit_gcn
 
+default_backbone_all_layers = [
+    (3, 64, 1),
+    (64, 64, 1),
+    (64, 64, 1),
+    (64, 64, 1),
+    (64, 128, 2),
+    (128, 128, 1),
+    (128, 128, 1),
+    (128, 256, 2),
+    (256, 256, 1),
+    (256, 256, 1),
+]
 
-default_backbone_all_layers = [(3, 64, 1), (64, 64, 1), (64, 64, 1), (64, 64, 1), (64, 128,
-                                                                                   2), (128, 128, 1),
-                               (128, 128, 1), (128, 256, 2), (256, 256, 1), (256, 256, 1)]
-
-default_backbone = [(64, 64, 1), (64, 64, 1), (64, 64, 1), (64, 128,
-                                                            2), (128, 128, 1),
-                    (128, 128, 1), (128, 256, 2), (256, 256, 1), (256, 256, 1)]
+default_backbone = [
+    (64, 64, 1),
+    (64, 64, 1),
+    (64, 64, 1),
+    (64, 128, 2),
+    (128, 128, 1),
+    (128, 128, 1),
+    (128, 256, 2),
+    (256, 256, 1),
+    (256, 256, 1),
+]
 
 
 class Model(nn.Module):
-    """ Spatial temporal graph convolutional networks
+    """Spatial temporal graph convolutional networks
                         for skeleton-based action recognition.
 
     Input shape:
@@ -34,7 +47,7 @@ class Model(nn.Module):
               T is the length of the sequence,
               V is the number of joints or graph nodes,
           and M is the number of people.
-    
+
     Arguments:
         About shape:
             channel (int): Number of channels in the input data
@@ -57,58 +70,55 @@ class Model(nn.Module):
 
     """
 
-    def __init__(self,
-                 channel,
-                 num_class,
-                 window_size,
-                 num_point,
-                 attention,
-                 only_attention,
-                 tcn_attention,
-                 only_temporal_attention,
-                 attention_3,
-                 relative,
-                 kernel_temporal,
-                 double_channel,
-                 drop_connect,
-                 concat_original,
-                 dv,
-                 dk,
-                 Nh,
-                 dim_block1,
-                 dim_block2,
-                 dim_block3,
-                 all_layers,
-                 data_normalization,
-                 visualization,
-                 skip_conn,
-                 adjacency,
-                 bn_flag,
-                 weight_matrix,
-                 device,
-                 n,
-                 more_channels,
-                 num_person=1,
-                 use_data_bn=False,
-                 backbone_config=None,
-                 graph=None,
-                 graph_args=dict(),
-                 mask_learning=False,
-                 use_local_bn=False,
-                 multiscale=False,
-                 temporal_kernel_size=9,
-                 dropout=0.5,
-                 agcn = True):
-        super(Model, self).__init__()
+    def __init__(
+        self,
+        channel,
+        num_class,
+        window_size,
+        num_point,
+        attention,
+        only_attention,
+        tcn_attention,
+        only_temporal_attention,
+        attention_3,
+        relative,
+        kernel_temporal,
+        double_channel,
+        drop_connect,
+        concat_original,
+        dv,
+        dk,
+        Nh,
+        dim_block1,
+        dim_block2,
+        dim_block3,
+        all_layers,
+        data_normalization,
+        visualization,
+        skip_conn,
+        adjacency,
+        bn_flag,
+        weight_matrix,
+        n,
+        more_channels,
+        num_person=1,
+        use_data_bn=False,
+        backbone_config=None,
+        graph=None,
+        graph_args: dict = None,
+        mask_learning=False,
+        use_local_bn=False,
+        multiscale=False,
+        temporal_kernel_size=9,
+        dropout=0.5,
+        agcn=True,
+    ):
+        super().__init__()
         if graph is None:
             raise ValueError()
-        else:
-            Graph = import_class(graph)
-            self.graph = Graph(**graph_args)
-            # self.A = torch.from_numpy(self.graph.A).float().cuda(0)
-            # self.A = torch.from_numpy(self.graph.A).float()
-            #self.A = self.graph.A
-            self.A = torch.from_numpy(self.graph.A.astype(np.float32))
+        Graph = import_class(graph)
+        self.graph = Graph(**graph_args)
+        self.A = torch.from_numpy(self.graph.A.astype(float))
 
         self.num_class = num_class
         self.use_data_bn = use_data_bn
@@ -131,22 +141,17 @@ class Model(nn.Module):
 
         # Different bodies share batchNorm parameters or not
         self.M_dim_bn = True
-
         if self.M_dim_bn:
             self.data_bn = nn.BatchNorm1d(channel * num_point * num_person)
         else:
             self.data_bn = nn.BatchNorm1d(channel * num_point)
 
-        if self.all_layers:
-            if not self.double_channel:
-                self.starting_ch = 64
-            else:
-                self.starting_ch = 128
+        if self.all_layers and not self.double_channel:
+            self.starting_ch = 64
+        elif self.all_layers or not self.double_channel:
+            self.starting_ch = 128
         else:
-            if not self.double_channel:
-                self.starting_ch = 128
-            else:
-                self.starting_ch = 256
+            self.starting_ch = 256
 
         kwargs = dict(
             A=self.A,
@@ -161,7 +166,6 @@ class Model(nn.Module):
             attention_3=attention_3,
             relative=relative,
             weight_matrix=weight_matrix,
-            device=device,
             more_channels=self.more_channels,
             drop_connect=self.drop_connect,
             data_normalization=self.data_normalization,
@@ -178,13 +182,10 @@ class Model(nn.Module):
             dim_block2=dim_block2,
             dim_block3=dim_block3,
             num_point=num_point,
-            agcn = agcn
+            agcn=agcn,
         )
 
-        if self.multiscale:
-            unit = TCN_GCN_unit_multiscale
-        else:
-            unit = TCN_GCN_unit
+        unit = TCN_GCN_unit_multiscale if self.multiscale else TCN_GCN_unit
 
         # backbone
         if backbone_config is None:
@@ -192,10 +193,12 @@ class Model(nn.Module):
                 backbone_config = default_backbone_all_layers
             else:
                 backbone_config = default_backbone
-        self.backbone = nn.ModuleList([
-            unit(in_c, out_c, stride=stride, **kwargs)
-            for in_c, out_c, stride in backbone_config
-        ])
+        self.backbone = nn.ModuleList(
+            [
+                unit(in_c, out_c, stride=stride, **kwargs)
+                for in_c, out_c, stride in backbone_config
+            ]
+        )
         if self.double_channel:
             backbone_in_c = backbone_config[0][0] * 2
             backbone_out_c = backbone_config[-1][1] * 2
@@ -209,51 +212,74 @@ class Model(nn.Module):
                 in_c = in_c * 2
                 out_c = out_c * 2
             if i == 3 and concat_original:
-                backbone.append(unit(in_c + channel, out_c, stride=stride, last=i == len(default_backbone) - 1,
-                                     last_graph=(i == len(default_backbone) - 1), layer=i, **kwargs))
+                backbone.append(
+                    unit(
+                        in_c + channel,
+                        out_c,
+                        stride=stride,
+                        last=i == len(default_backbone) - 1,
+                        last_graph=(i == len(default_backbone) - 1),
+                        layer=i,
+                        **kwargs
+                    )
+                )
             else:
-                backbone.append(unit(in_c, out_c, stride=stride, last=i == len(default_backbone) - 1,
-                                     last_graph=(i == len(default_backbone) - 1), layer=i, **kwargs))
+                backbone.append(
+                    unit(
+                        in_c,
+                        out_c,
+                        stride=stride,
+                        last=i == len(default_backbone) - 1,
+                        last_graph=(i == len(default_backbone) - 1),
+                        layer=i,
+                        **kwargs
+                    )
+                )
             if backbone_out_t % stride == 0:
                 backbone_out_t = backbone_out_t // stride
             else:
                 backbone_out_t = backbone_out_t // stride + 1
         self.backbone = nn.ModuleList(backbone)
-        print("self.backbone: ", self.backbone)
-        for i in range(0, len(backbone)):
-            pytorch_total_params = sum(p.numel() for p in self.backbone[i].parameters() if p.requires_grad)
-            print(pytorch_total_params)
+        # print("self.backbone: ", self.backbone)
 
         # head
-
         if not all_layers:
-            if not agcn:
-                self.gcn0 = unit_gcn(
+            self.gcn0 = (
+                unit_agcn(
                     channel,
                     backbone_in_c,
                     self.A,
                     mask_learning=mask_learning,
-                    use_local_bn=use_local_bn)
-            else:
-                self.gcn0 = unit_agcn(
+                    use_local_bn=use_local_bn,
+                )
+                if agcn
+                else unit_gcn(
                     channel,
                     backbone_in_c,
                     self.A,
                     mask_learning=mask_learning,
-                    use_local_bn=use_local_bn)
+                    use_local_bn=use_local_bn,
+                )
+            )
 
             self.tcn0 = Unit2D(backbone_in_c, backbone_in_c, kernel_size=9)
 
         # tail
         self.person_bn = nn.BatchNorm1d(backbone_out_c)
         self.gap_size = backbone_out_t
-        self.fcn = nn.Conv1d(backbone_out_c, num_class, kernel_size=1)
-        conv_init(self.fcn)
+        if type(self.num_class) == list:
+            self.fcn = nn.ModuleList(
+                [
+                    nn.Conv1d(backbone_out_c, num_classes, kernel_size=1)
+                    for num_classes in self.num_class
+                ]
+            )
+        else:
+            self.fcn = nn.Conv1d(backbone_out_c, self.num_class, kernel_size=1)
 
-    def forward(self, x, label, name):
+    def forward(self, x):
         N, C, T, V, M = x.size()
-        print(x.shape)
-        if (self.concat_original):
+        if self.concat_original:
             x_coord = x
             x_coord = x_coord.permute(0, 4, 1, 2, 3).reshape(N * M, C, T, V)
 
@@ -265,22 +291,26 @@ class Model(nn.Module):
                 x = x.permute(0, 4, 3, 1, 2).contiguous().view(N * M, V * C, T)
             x = self.data_bn(x)
             # to (N*M, C, T, V)
-            x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(
-                N * M, C, T, V)
+            x = (
+                x.view(N, M, V, C, T)
+                .permute(0, 1, 3, 4, 2)
+                .contiguous()
+                .view(N * M, C, T, V)
+            )
         else:
             # from (N, C, T, V, M) to (N*M, C, T, V)
             x = x.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
 
         # model
         if not self.all_layers:
-            x = self.gcn0(x, label, name)
+            x = self.gcn0(x)
             x = self.tcn0(x)
 
         for i, m in enumerate(self.backbone):
             if i == 3 and self.concat_original:
-                x = m(torch.cat((x, x_coord), dim=1), label, name)
+                x = m(torch.cat((x, x_coord), dim=1))
             else:
-                x = m(x, label, name)
+                x = m(x)
 
         # V pooling
         x = F.avg_pool2d(x, kernel_size=(1, V))
@@ -294,53 +324,52 @@ class Model(nn.Module):
         x = F.avg_pool1d(x, kernel_size=x.size()[2])
 
         # C fcn
-        x = self.fcn(x)
-        x = F.avg_pool1d(x, x.size()[2:])
-        x = x.view(N, self.num_class)
-        return x
+        if type(self.num_class) == list:
+            return [fcn(x).squeeze(-1) for fcn in self.fcn]
+        return self.fcn(x).squeeze(-1)
 
 
 class TCN_GCN_unit(nn.Module):
-    def __init__(self,
-                 in_channel,
-                 out_channel,
-                 A,
-                 attention,
-                 only_attention,
-                 tcn_attention,
-                 only_temporal_attention,
-                 relative,
-                 device,
-                 attention_3,
-                 dv,
-                 dk,
-                 Nh,
-                 num,
-                 dim_block1,
-                 dim_block2,
-                 dim_block3,
-                 num_point,
-                 weight_matrix,
-                 more_channels,
-                 drop_connect,
-                 starting_ch,
-                 all_layers,
-                 adjacency,
-                 data_normalization,
-                 visualization,
-                 skip_conn,
-                 layer=0,
-                 kernel_size=9,
-                 stride=1,
-                 dropout=0.5,
-                 use_local_bn=False,
-                 mask_learning=False,
-                 last=False,
-                 last_graph=False,
-                 agcn = False
-                 ):
-        super(TCN_GCN_unit, self).__init__()
-        half_out_channel = out_channel / 2
+    def __init__(
+        self,
+        in_channel,
+        out_channel,
+        A,
+        attention,
+        only_attention,
+        tcn_attention,
+        only_temporal_attention,
+        relative,
+        attention_3,
+        dv,
+        dk,
+        Nh,
+        num,
+        dim_block1,
+        dim_block2,
+        dim_block3,
+        num_point,
+        weight_matrix,
+        more_channels,
+        drop_connect,
+        starting_ch,
+        all_layers,
+        adjacency,
+        data_normalization,
+        visualization,
+        skip_conn,
+        layer=0,
+        kernel_size=9,
+        stride=1,
+        dropout=0.5,
+        use_local_bn=False,
+        mask_learning=False,
+        last=False,
+        last_graph=False,
+        agcn=False,
+    ):
+        super().__init__()
+        out_channel / 2
         self.A = A
 
         self.V = A.shape[-1]
@@ -355,66 +384,97 @@ class TCN_GCN_unit(nn.Module):
         self.stride = stride
         self.drop_connect = drop_connect
         self.visualization = visualization
-        self.device = device
         self.all_layers = all_layers
         self.more_channels = more_channels
 
-        if (out_channel >= starting_ch and attention or (self.all_layers and attention)):
+        if out_channel >= starting_ch and attention or (self.all_layers and attention):
 
-            self.gcn1 = gcn_unit_attention(in_channel, out_channel, dv_factor=dv, dk_factor=dk, Nh=Nh,
-                                           complete=True,
-                                           relative=relative, only_attention=only_attention, layer=layer, incidence=A,
-                                           bn_flag=True, last_graph=self.last_graph, more_channels=self.more_channels,
-                                           drop_connect=self.drop_connect, adjacency=self.adjacency, num=num,
-                                           data_normalization=self.data_normalization, skip_conn=self.skip_conn,
-                                           visualization=self.visualization, num_point=self.num_point)
+            self.gcn1 = gcn_unit_attention(
+                in_channel,
+                out_channel,
+                dv_factor=dv,
+                dk_factor=dk,
+                Nh=Nh,
+                complete=True,
+                relative=relative,
+                only_attention=only_attention,
+                layer=layer,
+                incidence=A,
+                bn_flag=True,
+                last_graph=self.last_graph,
+                more_channels=self.more_channels,
+                drop_connect=self.drop_connect,
+                adjacency=self.adjacency,
+                num=num,
+                data_normalization=self.data_normalization,
+                skip_conn=self.skip_conn,
+                visualization=self.visualization,
+                num_point=self.num_point,
+            )
         else:
+            args = (in_channel, out_channel, A)
+            kwargs = {"use_local_bn": use_local_bn, "mask_learning": mask_learning}
+            self.gcn1 = (
+                unit_agcn(*args, **kwargs) if agcn else unit_gcn(*args, **kwargs)
+            )
 
-            if not agcn:
-                self.gcn1 = unit_gcn(
-                    in_channel,
-                    out_channel,
-                    A,
-                    use_local_bn=use_local_bn,
-                    mask_learning=mask_learning)
-            else:
-                self.gcn1 = unit_agcn(
-                    in_channel,
-                    out_channel,
-                    A,
-                    use_local_bn=use_local_bn,
-                    mask_learning=mask_learning)
-
-        if (out_channel >= starting_ch and tcn_attention or (self.all_layers and tcn_attention)):
+        if (
+            out_channel >= starting_ch
+            and tcn_attention
+            or (self.all_layers and tcn_attention)
+        ):
 
             if out_channel <= starting_ch and self.all_layers:
-                self.tcn1 = tcn_unit_attention_block(out_channel, out_channel, dv_factor=dv,
-                                                     dk_factor=dk, Nh=Nh,
-                                                     relative=relative, only_temporal_attention=only_temporal_attention,
-                                                     dropout=dropout,
-                                                     kernel_size_temporal=9, stride=stride,
-                                                     weight_matrix=weight_matrix, bn_flag=True, last=self.last,
-                                                     layer=layer,
-                                                     device=self.device, more_channels=self.more_channels,
-                                                     drop_connect=self.drop_connect, n=num,
-                                                     data_normalization=self.data_normalization,
-                                                     skip_conn=self.skip_conn,
-                                                     visualization=self.visualization, dim_block1=dim_block1,
-                                                     dim_block2=dim_block2, dim_block3=dim_block3, num_point=self.num_point)
+                self.tcn1 = TcnUnitAttentionBlock(
+                    out_channel,
+                    out_channel,
+                    dv_factor=dv,
+                    dk_factor=dk,
+                    Nh=Nh,
+                    relative=relative,
+                    only_temporal_attention=only_temporal_attention,
+                    dropout=dropout,
+                    kernel_size_temporal=9,
+                    stride=stride,
+                    weight_matrix=weight_matrix,
+                    bn_flag=True,
+                    last=self.last,
+                    layer=layer,
+                    more_channels=self.more_channels,
+                    drop_connect=self.drop_connect,
+                    n=num,
+                    data_normalization=self.data_normalization,
+                    skip_conn=self.skip_conn,
+                    visualization=self.visualization,
+                    dim_block1=dim_block1,
+                    dim_block2=dim_block2,
+                    dim_block3=dim_block3,
+                    num_point=self.num_point,
+                )
             else:
-                self.tcn1 = tcn_unit_attention(out_channel, out_channel, dv_factor=dv,
-                                               dk_factor=dk, Nh=Nh,
-                                               relative=relative, only_temporal_attention=only_temporal_attention,
-                                               dropout=dropout,
-                                               kernel_size_temporal=9, stride=stride,
-                                               weight_matrix=weight_matrix, bn_flag=True, last=self.last,
-                                               layer=layer,
-                                               device=self.device, more_channels=self.more_channels,
-                                               drop_connect=self.drop_connect, n=num,
-                                               data_normalization=self.data_normalization, skip_conn=self.skip_conn,
-                                               visualization=self.visualization, num_point=self.num_point)
-
-
+                self.tcn1 = TcnUnitAttention(
+                    out_channel,
+                    out_channel,
+                    dv_factor=dv,
+                    dk_factor=dk,
+                    Nh=Nh,
+                    relative=relative,
+                    only_temporal_attention=only_temporal_attention,
+                    dropout=dropout,
+                    kernel_size_temporal=9,
+                    stride=stride,
+                    weight_matrix=weight_matrix,
+                    bn_flag=True,
+                    last=self.last,
+                    layer=layer,
+                    more_channels=self.more_channels,
+                    drop_connect=self.drop_connect,
+                    n=num,
+                    data_normalization=self.data_normalization,
+                    skip_conn=self.skip_conn,
+                    visualization=self.visualization,
+                    num_point=self.num_point,
+                )
 
         else:
             self.tcn1 = Unit2D(
@@ -422,44 +482,39 @@ class TCN_GCN_unit(nn.Module):
                 out_channel,
                 kernel_size=kernel_size,
                 dropout=dropout,
-                stride=stride)
-        if ((in_channel != out_channel) or (stride != 1)):
-            self.down1 = Unit2D(
-                in_channel, out_channel, kernel_size=1, stride=stride)
+                stride=stride,
+            )
+        if (in_channel != out_channel) or (stride != 1):
+            self.down1 = Unit2D(in_channel, out_channel, kernel_size=1, stride=stride)
         else:
             self.down1 = None
 
-    def forward(self, x, label, name):
+    def forward(self, x):
         # N, C, T, V = x.size()
-        x = self.tcn1(self.gcn1(x, label, name)) + (x if
-                                                    (self.down1 is None) else self.down1(x))
+        x = self.tcn1(self.gcn1(x)) + (x if self.down1 is None else self.down1(x))
 
         return x
 
 
 class TCN_GCN_unit_multiscale(nn.Module):
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 A,
-                 kernel_size=9,
-                 stride=1,
-                 **kwargs):
-        super(TCN_GCN_unit_multiscale, self).__init__()
+    def __init__(self, in_channels, out_channels, A, kernel_size=9, stride=1, **kwargs):
+        super().__init__()
         self.unit_1 = TCN_GCN_unit(
             in_channels,
             out_channels / 2,
             A,
             kernel_size=kernel_size,
             stride=stride,
-            **kwargs)
+            **kwargs
+        )
         self.unit_2 = TCN_GCN_unit(
             in_channels,
             out_channels - out_channels / 2,
             A,
             kernel_size=kernel_size * 2 - 1,
             stride=stride,
-            **kwargs)
+            **kwargs
+        )
 
     def forward(self, x):
         return torch.cat((self.unit_1(x), self.unit_2(x)), dim=1)

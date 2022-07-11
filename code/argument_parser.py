@@ -86,7 +86,7 @@ def get_parser(exp_name: str):
     )
     parser.add_argument(
         "--config",
-        default="config/st_gcn/kinetics-skeleton/train.yaml",
+        default="config/st_gcn/custom_data/train.yaml",
         help="path to the configuration file",
     )
 
