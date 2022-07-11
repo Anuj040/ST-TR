@@ -23,6 +23,7 @@ from utils.train_utils import (
     save_checkpoint,
     scaled_opt_update,
 )
+from yaml import Loader, load
 
 NAME_EXP = "NTT_test"
 writer = SummaryWriter(f"./{NAME_EXP}")
@@ -40,6 +41,11 @@ class Processor:
     def __init__(self, arg):
         self.arg = arg
         self.load_data()
+
+        with open("custom_data/config.yaml", "r") as f:
+            self.data_config = load(f, Loader=Loader)
+        self.num_points = sum(list(self.data_config["feature_length"].values()))
+
         self.load_model()
         self.load_optimizer()
         self.graph = nx.Graph()
@@ -50,7 +56,6 @@ class Processor:
         self.best_epoch = 0
         self.best_accuracy = 0
         self.params = arg
-        self.num_joints = 25
 
     def load_checkpoint(self, path, filename):
         ckpt_path = os.path.join(path, filename)
@@ -67,10 +72,12 @@ class Processor:
 
         self.data_loader = {}
         self.trainLoader = Feeder(
-            **self.arg.train_feeder_args, channel=self.arg.model_args["channel"]
+            **self.arg.train_feeder_args,
+            channel=self.arg.model_args["channel"],
         )
         self.testLoader = Feeder(
-            **self.arg.test_feeder_args, channel=self.arg.model_args["channel"]
+            **self.arg.test_feeder_args,
+            channel=self.arg.model_args["channel"],
         )
 
         if arg.validation_split:
@@ -105,7 +112,9 @@ class Processor:
     def load_model(self) -> None:
         Model = import_class(self.arg.model)
         # self.model = Model(**self.arg.model_args).to(DEVICE)
-        self.model = nn.DataParallel(Model(**self.arg.model_args).to(DEVICE))
+        self.model = nn.DataParallel(
+            Model(**self.arg.model_args, num_point=self.num_points).to(DEVICE)
+        )
         self.loss = nn.CrossEntropyLoss().to(DEVICE)
 
         if self.arg.weights:
@@ -194,7 +203,7 @@ class Processor:
         for batch_idx, (data, label, _) in enumerate(loader):
 
             data = data.float().to(DEVICE)
-            label = label.long().to(DEVICE)
+            label = label.to(DEVICE)
             timer["dataloader"] += self.time_keeper.split_time()
 
             # forward
@@ -593,7 +602,7 @@ if __name__ == "__main__":
     p = parser.parse_args()
     if p.config is not None:
         with open(p.config, "r") as f:
-            default_arg = yaml.load(f)
+            default_arg = yaml.load(f, Loader=Loader)
         key = vars(p).keys()
         for k in default_arg.keys():
             if k not in key:
