@@ -14,11 +14,6 @@ for Skeleton Action Recognition" of Shi. et al. ("https://github.com/lshiwjx/2s-
 """
 
 
-def bn_init(bn, scale):
-    nn.init.constant_(bn.weight, scale)
-    nn.init.constant_(bn.bias, 0)
-
-
 def conv_branch_init(conv, branches):
     weight = conv.weight
     n = weight.size(0)
@@ -67,10 +62,6 @@ class UnitAGCN(nn.Module):
         self.soft = nn.Softmax(-2)
         self.relu = nn.ReLU()
 
-        for m in self.modules():
-            if isinstance(m, nn.BatchNorm2d):
-                bn_init(m, 1)
-        bn_init(self.bn, 1e-6)
         for i in range(self.num_subset):
             conv_branch_init(self.conv_d[i], self.num_subset)
 

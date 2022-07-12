@@ -379,7 +379,6 @@ class TCN_GCN_unit(nn.Module):
         agcn=False,
     ):
         super().__init__()
-        out_channel / 2
         self.A = A
 
         self.V = A.shape[-1]
@@ -513,7 +512,7 @@ class TCN_GCN_unit_multiscale(nn.Module):
         super().__init__()
         self.unit_1 = TCN_GCN_unit(
             in_channels,
-            out_channels / 2,
+            out_channels // 2,
             A,
             kernel_size=kernel_size,
             stride=stride,
@@ -521,7 +520,7 @@ class TCN_GCN_unit_multiscale(nn.Module):
         )
         self.unit_2 = TCN_GCN_unit(
             in_channels,
-            out_channels - out_channels / 2,
+            out_channels - out_channels // 2,
             A,
             kernel_size=kernel_size * 2 - 1,
             stride=stride,
