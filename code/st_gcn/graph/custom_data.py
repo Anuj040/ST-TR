@@ -27,21 +27,20 @@ class Graph:
 
     def get_adjacency_matrix(self, labeling_mode=None):
         if labeling_mode is None:
-            return self.A
+            raise ValueError()
+
         if labeling_mode == "uniform":
             A = tools.get_uniform_graph(num_node, self_link, neighbor)
         elif labeling_mode == "distance*":
-            A = tools.get_uniform_distance_graph(num_node, self_link, neighbor)
+            A = tools.get_uniform_distance_graph(num_node, neighbor)
         elif labeling_mode == "distance":
-            A = tools.get_distance_graph(num_node, self_link, neighbor)
+            A = tools.get_distance_graph(num_node, neighbor)
         elif labeling_mode == "spatial":
-            A = tools.get_spatial_graph(num_node, self_link, inward, outward)
+            A = tools.get_spatial_graph(num_node, inward, outward)
         elif labeling_mode == "DAD":
             A = tools.get_DAD_graph(num_node, self_link, neighbor)
         elif labeling_mode == "DLD":
-            A = tools.get_DLD_graph(num_node, self_link, neighbor)
-        else:
-            raise ValueError()
+            A = tools.get_DLD_graph(num_node, neighbor)
         return A
 
 

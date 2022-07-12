@@ -128,7 +128,7 @@ class FeederCustom(Dataset):
             data_numpy = tools.auto_pading(data_numpy, self.window_size)
         if self.random_move:
             data_numpy = tools.random_move(data_numpy)
-        return data_numpy, activity_label, hand_activity_label
+        return data_numpy, (activity_label, hand_activity_label)
 
     def top_k(self, score, top_k, label_type):
         label = (
