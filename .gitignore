@@ -1,7 +1,8 @@
 # Directories
 datasets
 NTT_test
-kinetics_data
+code/**/*.npy
+code/**/*.pkl
 
 # Setup
 build
