@@ -26,7 +26,7 @@ def normalize_digraph(A: np.ndarray) -> np.ndarray:
     Dn = np.zeros((num_node, num_node))
     for i in range(num_node):
         if Dl[i] > 0:
-            Dn[i, i] = Dl[i] ** (-1)
+            Dn[i, i] = 1 / Dl[i]
     return np.dot(A, Dn)
 
 
