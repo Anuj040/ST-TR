@@ -201,8 +201,10 @@ class Processor:
             arg.optimize_every, tot_num_batches - running_batches
         )
         self.optimizer.zero_grad()
-        for batch_idx, (data, label1, label2) in enumerate(loader):
+        for batch_idx, (data, label) in enumerate(loader):
+
             data = data.float().to(DEVICE)
+            label1, label2 = label
             label1 = label1.to(DEVICE)
             label2 = label2.to(DEVICE)
             timer["dataloader"] += self.time_keeper.split_time()
@@ -467,8 +469,9 @@ class Processor:
         with torch.no_grad():
             for ln in loader_name:
                 loss_value = []
-                for data, label1, label2 in self.data_loader[ln]:
+                for data, label in self.data_loader[ln]:
                     data = data.float().to(DEVICE)
+                    label1, label2 = label
                     label1 = label1.to(DEVICE)
                     label2 = label2.to(DEVICE)
 
