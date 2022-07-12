@@ -1,24 +1,24 @@
 # The based unit of graph convolutional networks.
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-
-from .net import conv_init
 
 
 class unit_gcn(nn.Module):
     def __init__(
         self,
-        in_channels,
-        out_channels,
+        in_channels: int,
+        out_channels: int,
         A,
-        use_local_bn=False,
-        kernel_size=1,
-        stride=1,
-        mask_learning=False,
+        use_local_bn: bool = False,
+        kernel_size: int = 1,
+        stride: int = 1,
+        mask_learning: bool = False,
     ):
-        super(unit_gcn, self).__init__()
+        super().__init__()
 
         # ==========================================
         # number of nodes
@@ -52,11 +52,11 @@ class unit_gcn(nn.Module):
                     kernel_size=(kernel_size, 1),
                     padding=(int((kernel_size - 1) / 2), 0),
                     stride=(stride, 1),
+                    bias=False,
                 )
                 for _ in range(self.num_A)
             ]
         )
-
         if mask_learning:
             self.mask = nn.Parameter(torch.ones(self.A.size()))
         if use_local_bn:
@@ -66,24 +66,29 @@ class unit_gcn(nn.Module):
 
         self.relu = nn.ReLU()
 
-        # initialize
-        for conv in self.conv_list:
-            conv_init(conv)
-
-    def forward(self, x: torch.tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.tensor, space_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         N, C, T, V = x.size()
-        self.A = self.A.cuda(x.get_device())
-        A = self.A
+        A = self.A.to(x.get_device()).to(x.dtype)
 
         # reweight adjacency matrix
         if self.mask_learning:
             A = A * self.mask
 
-        # graph convolution
-        for i, a in enumerate(A):
-            xa = x.reshape(-1, V).mm(a).reshape(N, C, T, V)
+        if space_mask is not None:
+            space_mask = space_mask.unsqueeze(1).tile(1, A.size(0), 1, 1)
+            A = A.unsqueeze(0) * (1 - space_mask)
+            # graph convolution
+            for i, a in enumerate(A.permute(1, 0, 2, 3)):
+                xa = torch.matmul(x.reshape(N, C * T, V), a).reshape(N, C, T, V)
+                y = self.conv_list[i](xa) if i == 0 else y + self.conv_list[i](xa)
+        else:
+            # graph convolution
+            for i, a in enumerate(A):
+                xa = x.reshape(-1, V).mm(a).reshape(N, C, T, V)
+                y = self.conv_list[i](xa) if i == 0 else y + self.conv_list[i](xa)
 
-            y = self.conv_list[i](xa) if i == 0 else y + self.conv_list[i](xa)
         # batch normalization
         if self.use_local_bn:
             y = y.permute(0, 1, 3, 2).contiguous().view(N, self.out_channels * V, T)

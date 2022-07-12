@@ -1,5 +1,3 @@
-import math
-
 import torch
 import torch.nn as nn
 
@@ -36,17 +34,6 @@ class Unit2D(nn.Module):
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout, inplace=True)
 
-        # initialize
-        conv_init(self.conv)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.dropout(x)
         return self.relu(self.bn(self.conv(x)))
-
-
-def conv_init(module):
-    # he_normal
-    n = module.out_channels
-    for k in module.kernel_size:
-        n = n * k
-    module.weight.data.normal_(0, math.sqrt(2.0 / n))

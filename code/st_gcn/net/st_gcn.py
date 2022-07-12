@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,7 +9,7 @@ from .gcn_attention import gcn_unit_attention
 from .net import Unit2D
 from .temporal_transformer import TcnUnitAttention
 from .temporal_transformer_windowed import TcnUnitAttentionBlock
-from .unit_agcn import unit_agcn
+from .unit_agcn import UnitAGCN
 from .unit_gcn import unit_gcn
 
 default_backbone_all_layers = [
@@ -118,8 +120,7 @@ class Model(nn.Module):
             raise ValueError()
         Graph = import_class(graph)
         self.graph = Graph(**graph_args)
-        self.A = torch.from_numpy(self.graph.A.astype(float))
-
+        self.A = torch.from_numpy(self.graph.A)
         self.num_class = num_class
         self.use_data_bn = use_data_bn
         self.multiscale = multiscale
@@ -245,7 +246,7 @@ class Model(nn.Module):
         # head
         if not all_layers:
             self.gcn0 = (
-                unit_agcn(
+                UnitAGCN(
                     channel,
                     backbone_in_c,
                     self.A,
@@ -277,13 +278,15 @@ class Model(nn.Module):
         else:
             self.fcn = nn.Conv1d(backbone_out_c, self.num_class, kernel_size=1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
         N, C, T, V, M = x.size()
         if self.concat_original:
             x_coord = x
             x_coord = x_coord.permute(0, 4, 1, 2, 3).reshape(N * M, C, T, V)
 
         # data bn
+        time_mask = (torch.sum(x, dim=(1, 3, 4), keepdim=True) == 0).to(x.dtype)
+        space_mask = (torch.sum(x, dim=(1, 2, 4), keepdim=True) == 0).to(x.dtype)
         if self.use_data_bn:
             if self.M_dim_bn:
                 x = x.permute(0, 4, 3, 1, 2).contiguous().view(N, M * V * C, T)
@@ -301,16 +304,23 @@ class Model(nn.Module):
             # from (N, C, T, V, M) to (N*M, C, T, V)
             x = x.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
 
+        # from (N, 1, T, 1, 1) to (N*1, 1, T, 1)
+        time_mask = time_mask.permute(0, 4, 1, 2, 3).contiguous().view(N, 1, T, 1)
+        # from (N, 1, 1, V, 1) to (N*1, V, V)
+        space_mask = (
+            space_mask.permute(0, 4, 1, 2, 3).contiguous().view(N, V, 1).tile((1, 1, V))
+        )
+
         # model
         if not self.all_layers:
-            x = self.gcn0(x)
+            x = self.gcn0(x, space_mask)
             x = self.tcn0(x)
 
         for i, m in enumerate(self.backbone):
             if i == 3 and self.concat_original:
-                x = m(torch.cat((x, x_coord), dim=1))
+                x = m(torch.cat((x, x_coord), dim=1), space_mask)
             else:
-                x = m(x)
+                x = m(x, space_mask)
 
         # V pooling
         x = F.avg_pool2d(x, kernel_size=(1, V))
@@ -414,9 +424,7 @@ class TCN_GCN_unit(nn.Module):
         else:
             args = (in_channel, out_channel, A)
             kwargs = {"use_local_bn": use_local_bn, "mask_learning": mask_learning}
-            self.gcn1 = (
-                unit_agcn(*args, **kwargs) if agcn else unit_gcn(*args, **kwargs)
-            )
+            self.gcn1 = UnitAGCN(*args, **kwargs) if agcn else unit_gcn(*args, **kwargs)
 
         if (
             out_channel >= starting_ch
@@ -489,9 +497,13 @@ class TCN_GCN_unit(nn.Module):
         else:
             self.down1 = None
 
-    def forward(self, x):
+    def forward(
+        self, x: torch.Tensor, space_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         # N, C, T, V = x.size()
-        x = self.tcn1(self.gcn1(x)) + (x if self.down1 is None else self.down1(x))
+        x = self.tcn1(self.gcn1(x, space_mask)) + (
+            x if self.down1 is None else self.down1(x)
+        )
 
         return x
 
@@ -516,5 +528,9 @@ class TCN_GCN_unit_multiscale(nn.Module):
             **kwargs
         )
 
-    def forward(self, x):
-        return torch.cat((self.unit_1(x), self.unit_2(x)), dim=1)
+    def forward(
+        self, x: torch.Tensor, space_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        return torch.cat(
+            (self.unit_1(x, space_mask), self.unit_2(x, space_mask)), dim=1
+        )
