@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -34,6 +36,8 @@ class Unit2D(nn.Module):
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout, inplace=True)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, time_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         x = self.dropout(x)
         return self.relu(self.bn(self.conv(x)))

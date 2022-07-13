@@ -2,6 +2,8 @@
 Class that implements Temporal Transformer.
 Function adapted from: https://github.com/leaderj1001/Attention-Augmented-Conv2d
 """
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F_func
@@ -156,10 +158,14 @@ class TcnUnitAttention(nn.Module):
             self.dv % self.Nh == 0
         ), "dv should be divided by Nh. (example: out_channels: 20, dv: 4, Nh: 4)"
 
-    def forward(self, x: torch.Tensor):
+    def forward(
+        self, x: torch.Tensor, time_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         # Input x
         # (batch_size, channels, time, joints)
         N, C, T, V = x.size()
+        if time_mask is not None:
+            time_mask = -1e9 * time_mask.unsqueeze(-1).tile(1, 1, 1, time_mask.size(-1))
         x_sum = x
 
         if self.data_normalization:
@@ -196,10 +202,12 @@ class TcnUnitAttention(nn.Module):
 
         # Calculate weights
         if self.relative:
-
+            if time_mask is not None:
+                logits_sum = logits_sum + time_mask
             weights = F_func.softmax(logits_sum, dim=-1)
-
         else:
+            if time_mask is not None:
+                logits = logits + time_mask
             weights = F_func.softmax(logits, dim=-1)
 
         if self.drop_connect and self.training:
@@ -214,10 +222,14 @@ class TcnUnitAttention(nn.Module):
         # (batch, Nh, time, time)*(batch, Nh, time, dvh)=(batch, Nh, time, dvh)
 
         attn_out = torch.matmul(weights, flat_v.transpose(2, 3))
-        if not self.more_channels:
-            attn_out = torch.reshape(attn_out, (B, self.Nh, 1, T, self.dv // self.Nh))
-        else:
-            attn_out = torch.reshape(attn_out, (B, self.Nh, 1, T, self.dv // self.num))
+        shape = (
+            B,
+            self.Nh,
+            1,
+            T,
+        )
+        shape += (self.dv // self.num,) if self.more_channels else (self.dv // self.Nh,)
+        attn_out = torch.reshape(attn_out, shape)
 
         attn_out = attn_out.permute(0, 1, 4, 2, 3)
 
@@ -249,8 +261,7 @@ class TcnUnitAttention(nn.Module):
 
         if self.bn_flag:
             result = self.bn(result)
-        result = self.relu(result)
-        return result
+        return self.relu(result)
 
     def compute_flat_qkv(self, x, dk, dv, Nh):
         qkv = self.qkv_conv(x)
@@ -329,12 +340,12 @@ class TcnUnitAttention(nn.Module):
 class ScaleNorm(nn.Module):
     """ScaleNorm"""
 
-    def __init__(self, scale, eps=1e-5):
-        super(ScaleNorm, self).__init__()
+    def __init__(self, scale: float, eps: float = 1e-5):
+        super().__init__()
         self.scale = scale
 
         self.eps = eps
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         norm = self.scale / torch.norm(x, dim=1, keepdim=True).clamp(min=self.eps)
         return x * norm
