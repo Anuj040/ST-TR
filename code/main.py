@@ -14,6 +14,7 @@ import yaml
 from argument_parser import get_parser
 from sklearn.metrics import confusion_matrix
 from tensorboardX import SummaryWriter
+from tools.seesaw import SeesawLoss
 from torch.cuda.amp import GradScaler
 from utils.misc import import_class, save_arg
 from utils.time_utils import TimeKeeper
@@ -110,14 +111,27 @@ class Processor:
         )
 
     def load_model(self) -> None:
+        assert type(self.arg.model_args["num_class"]) == list, (
+            "Num of classes for each classifier head"
+            "(single as well) should be provided as a list"
+        )
         Model = import_class(self.arg.model)
         # self.model = Model(**self.arg.model_args).to(DEVICE)
         self.model = nn.DataParallel(
             Model(**self.arg.model_args, num_point=self.num_points).to(DEVICE)
         )
-        self.loss = [
-            nn.CrossEntropyLoss().to(DEVICE) for _ in self.arg.model_args["num_class"]
-        ]
+        if self.arg.loss_fn == "cce":
+            self.loss = [
+                nn.CrossEntropyLoss().to(DEVICE)
+                for _ in self.arg.model_args["num_class"]
+            ]
+        elif self.arg.loss_fn == "seesaw":
+            self.loss = [
+                SeesawLoss(num_classes=num_class).to(DEVICE)
+                for num_class in self.arg.model_args["num_class"]
+            ]
+        else:
+            raise ValueError(f"loss_fn type '{self.arg.loss_fn}' is not a valid option")
 
         if self.arg.weights:
             self.time_keeper.print_log(f"Load weights from {self.arg.weights}.")
