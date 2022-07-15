@@ -240,5 +240,10 @@ def get_parser(exp_name: str):
         default=None,
         help="mixed",
     )
-
+    parser.add_argument(
+        "--loss_fn",
+        type=str,
+        default=None,
+        help="loss function to use for optimization",
+    )
     return parser
