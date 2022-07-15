@@ -84,7 +84,6 @@ class Model(nn.Module):
         only_temporal_attention,
         attention_3,
         relative,
-        kernel_temporal,
         double_channel,
         drop_connect,
         concat_original,
@@ -111,7 +110,7 @@ class Model(nn.Module):
         mask_learning=False,
         use_local_bn=False,
         multiscale=False,
-        temporal_kernel_size=9,
+        kernel_temporal=9,
         dropout=0.5,
         agcn=True,
     ):
@@ -159,7 +158,7 @@ class Model(nn.Module):
             mask_learning=mask_learning,
             use_local_bn=use_local_bn,
             dropout=dropout,
-            kernel_size=temporal_kernel_size,
+            kernel_size=kernel_temporal,
             attention=attention,
             only_attention=only_attention,
             tcn_attention=tcn_attention,
@@ -263,7 +262,9 @@ class Model(nn.Module):
                 )
             )
 
-            self.tcn0 = Unit2D(backbone_in_c, backbone_in_c, kernel_size=9)
+            self.tcn0 = Unit2D(
+                backbone_in_c, backbone_in_c, kernel_size=kernel_temporal
+            )
 
         # tail
         self.person_bn = nn.BatchNorm1d(backbone_out_c)
@@ -286,7 +287,22 @@ class Model(nn.Module):
 
         # data bn
         time_mask = (torch.sum(x, dim=(1, 3, 4), keepdim=True) == 0).to(x.dtype)
+        # from (N, 1, T, 1, 1) to (N*1, 1, T, 1)
+        time_mask = (
+            time_mask.permute(0, 4, 1, 2, 3)
+            .contiguous()
+            .view(N, 1, T, 1)
+            .tile(1, 1, 1, V)
+        )
+        # N, 1, T, V, ---> N, V, 1, T  --> (N * V, 1, T)
+        time_mask = time_mask.permute(0, 3, 1, 2).reshape(-1, 1, T)
+        # time_mask = None
+
         space_mask = (torch.sum(x, dim=(1, 2, 4), keepdim=True) == 0).to(x.dtype)
+        # from (N, 1, 1, V, 1) to (N*1, V, V)
+        space_mask = (
+            space_mask.permute(0, 4, 1, 2, 3).contiguous().view(N, V, 1).tile((1, 1, V))
+        )
         if self.use_data_bn:
             if self.M_dim_bn:
                 x = x.permute(0, 4, 3, 1, 2).contiguous().view(N, M * V * C, T)
@@ -304,13 +320,6 @@ class Model(nn.Module):
             # from (N, C, T, V, M) to (N*M, C, T, V)
             x = x.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
 
-        # from (N, 1, T, 1, 1) to (N*1, 1, T, 1)
-        time_mask = time_mask.permute(0, 4, 1, 2, 3).contiguous().view(N, 1, T, 1)
-        # from (N, 1, 1, V, 1) to (N*1, V, V)
-        space_mask = (
-            space_mask.permute(0, 4, 1, 2, 3).contiguous().view(N, V, 1).tile((1, 1, V))
-        )
-
         # model
         if not self.all_layers:
             x = self.gcn0(x, space_mask)
@@ -318,9 +327,9 @@ class Model(nn.Module):
 
         for i, m in enumerate(self.backbone):
             if i == 3 and self.concat_original:
-                x = m(torch.cat((x, x_coord), dim=1), space_mask)
+                x, time_mask = m(torch.cat((x, x_coord), dim=1), space_mask, time_mask)
             else:
-                x = m(x, space_mask)
+                x, time_mask = m(x, space_mask, time_mask)
 
         # V pooling
         x = F.avg_pool2d(x, kernel_size=(1, V))
@@ -430,7 +439,6 @@ class TCN_GCN_unit(nn.Module):
             and tcn_attention
             or (self.all_layers and tcn_attention)
         ):
-
             if out_channel <= starting_ch and self.all_layers:
                 self.tcn1 = TcnUnitAttentionBlock(
                     out_channel,
@@ -441,7 +449,7 @@ class TCN_GCN_unit(nn.Module):
                     relative=relative,
                     only_temporal_attention=only_temporal_attention,
                     dropout=dropout,
-                    kernel_size_temporal=9,
+                    kernel_size_temporal=kernel_size,
                     stride=stride,
                     weight_matrix=weight_matrix,
                     bn_flag=True,
@@ -468,7 +476,7 @@ class TCN_GCN_unit(nn.Module):
                     relative=relative,
                     only_temporal_attention=only_temporal_attention,
                     dropout=dropout,
-                    kernel_size_temporal=9,
+                    kernel_size_temporal=kernel_size,
                     stride=stride,
                     weight_matrix=weight_matrix,
                     bn_flag=True,
@@ -493,18 +501,25 @@ class TCN_GCN_unit(nn.Module):
             )
         if (in_channel != out_channel) or (stride != 1):
             self.down1 = Unit2D(in_channel, out_channel, kernel_size=1, stride=stride)
+            self.mask_downsize = torch.nn.AvgPool1d(kernel_size=2, stride=2)
         else:
             self.down1 = None
 
     def forward(
-        self, x: torch.Tensor, space_mask: Optional[torch.Tensor] = None
+        self,
+        x: torch.Tensor,
+        space_mask: Optional[torch.Tensor] = None,
+        time_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # N, C, T, V = x.size()
-        x = self.tcn1(self.gcn1(x, space_mask)) + (
+        if self.down1 is not None and time_mask is not None:
+            time_mask = (self.mask_downsize(time_mask) == 0).to(x.dtype)
+        x = self.tcn1(self.gcn1(x, space_mask), time_mask) + (
             x if self.down1 is None else self.down1(x)
         )
-
-        return x
+        if x.size(-2) - time_mask.size(-1) == 1 and time_mask is not None:
+            time_mask = F.pad(time_mask, (1, 0), "constant", 0)
+        return x, time_mask
 
 
 class TCN_GCN_unit_multiscale(nn.Module):
