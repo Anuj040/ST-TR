@@ -115,7 +115,9 @@ class Processor:
         self.model = nn.DataParallel(
             Model(**self.arg.model_args, num_point=self.num_points).to(DEVICE)
         )
-        self.loss = nn.CrossEntropyLoss().to(DEVICE)
+        self.loss = [
+            nn.CrossEntropyLoss().to(DEVICE) for _ in self.arg.model_args["num_class"]
+        ]
 
         if self.arg.weights:
             self.time_keeper.print_log(f"Load weights from {self.arg.weights}.")
@@ -184,8 +186,7 @@ class Processor:
         lr = adjust_learning_rate(self.arg, self.optimizer, epoch)
         loss_value = []
         train_total = 0
-        train_correct1 = 0
-        train_correct2 = 0
+        train_correct = [0] * len(self.arg.model_args["num_class"])
 
         # Set the current_time
         self.time_keeper.record_time()
@@ -201,31 +202,39 @@ class Processor:
             arg.optimize_every, tot_num_batches - running_batches
         )
         self.optimizer.zero_grad()
-        for batch_idx, (data, label) in enumerate(loader):
+        for batch_idx, (data, labels) in enumerate(loader):
 
             data = data.float().to(DEVICE)
-            label1, label2 = label
-            label1 = label1.to(DEVICE)
-            label2 = label2.to(DEVICE)
+            labels = [label.to(DEVICE) for label in labels]
             timer["dataloader"] += self.time_keeper.split_time()
 
             # forward
             if scaler is not None:
                 with torch.cuda.amp.autocast(enabled=True):
-                    output1, output2 = self.model(data)
-                    loss = self.loss(output1, label1) + self.loss(output2, label2)
+                    outputs = self.model(data)
+                    loss = sum(
+                        loss_fn(output, label)
+                        for output, label, loss_fn in zip(outputs, labels, self.loss)
+                    )
             else:
-                output1, output2 = self.model(data)
-                loss = self.loss(output1, label1) + self.loss(output2, label2)
+                outputs = self.model(data)
+                loss = sum(
+                    loss_fn(output, label)
+                    for output, label, loss_fn in zip(outputs, labels, self.loss)
+                )
             loss_value.append(loss.item())
 
             # Metrics
-            _, predictions1 = torch.max(output1, 1)
-            _, predictions2 = torch.max(output2, 1)
-            train_total += label1.size(0)
-            train_correct1 += (predictions1 == label1).sum().item()
-            train_correct2 += (predictions2 == label2).sum().item()
-            acc = 100 * (train_correct1 + train_correct2) / train_total / 2
+            predictions = [torch.max(output, 1)[1] for output in outputs]
+            train_total += labels[0].size(0)
+            for ind, predicts in enumerate(predictions):
+                train_correct[ind] += (predicts == labels[ind]).sum().item()
+            acc = (
+                100
+                * sum(train_correct)
+                / train_total
+                / len(self.arg.model_args["num_class"])
+            )
 
             # backward
             loss /= running_optimize_every
@@ -276,10 +285,9 @@ class Processor:
             timer,
             loss_value,
         )
-        print(f"Here are the just predicted labels1: {predictions1}")
-        print(f"Here are the correct labels1: {label1}")
-        print(f"Here are the just predicted labels2: {predictions2}")
-        print(f"Here are the correct labels2: {label2}")
+        for ind, predicts in enumerate(predictions):
+            print(f"Here are the just predicted labels{ind+1}: {predicts}")
+            print(f"Here are the correct labels{ind+1}: {labels[ind]}")
 
     def train_logging(
         self,
@@ -456,9 +464,9 @@ class Processor:
     def val(self, epoch, save_score=False, loader_name=["val"]):
         self.model.eval()
         self.time_keeper.print_log(f"Eval epoch: {epoch + 1}")
-        val_correct1 = 0
-        val_correct2 = 0
+
         val_total = 0
+        val_correct = [0] * len(self.arg.model_args["num_class"])
         class_correct = [
             [0.0] * num_classes for num_classes in self.arg.model_args["num_class"]
         ]
@@ -469,35 +477,39 @@ class Processor:
         with torch.no_grad():
             for ln in loader_name:
                 loss_value = []
-                for data, label in self.data_loader[ln]:
+                for data, labels in self.data_loader[ln]:
                     data = data.float().to(DEVICE)
-                    label1, label2 = label
-                    label1 = label1.to(DEVICE)
-                    label2 = label2.to(DEVICE)
+                    labels = [label.to(DEVICE) for label in labels]
 
-                    output1, output2 = self.model(data)
-                    loss = self.loss(output1, label1) + self.loss(output2, label2)
+                    outputs = self.model(data)
+                    loss = sum(
+                        loss_fn(output, label)
+                        for output, label, loss_fn in zip(outputs, labels, self.loss)
+                    )
                     loss_value.append(loss.item())
 
-                    _, predictions1 = torch.max(output1, 1)
-                    _, predictions2 = torch.max(output2, 1)
-                    val_total += label1.size(0)
-                    val_correct1 += (predictions1 == label1).sum().item()
-                    val_correct2 += (predictions2 == label2).sum().item()
+                    predictions = [torch.max(output, 1)[1] for output in outputs]
+                    val_total += labels[0].size(0)
+                    for ind, predicts in enumerate(predictions):
+                        val_correct[ind] += (predicts == labels[ind]).sum().item()
+                    val_accuracy = (
+                        100
+                        * sum(val_correct)
+                        / val_total
+                        / len(self.arg.model_args["num_class"])
+                    )
 
-                    val_accuracy = 100 * (val_correct1 + val_correct2) / val_total / 2
-                    c1 = (label1 == predictions1.squeeze()).float()
-                    c2 = (label2 == predictions2.squeeze()).float()
+                    c = [
+                        (label == predicts.squeeze()).float()
+                        for label, predicts in zip(labels, predictions)
+                    ]
 
                     # Calculating validation accuracy for each class
-                    for l in range(label1.size(0)):
-                        class_label = label1[l]
-                        class_correct[0][class_label - 1] += c1[l]
-                        class_total[0][class_label - 1] += 1
-                    for l in range(label2.size(0)):
-                        class_label = label2[l]
-                        class_correct[1][class_label - 1] += c2[l]
-                        class_total[1][class_label - 1] += 1
+                    for ind, label in enumerate(labels):
+                        for l in range(label.size(0)):
+                            class_label = label[l]
+                            class_correct[ind][class_label - 1] += c[ind][l]
+                            class_total[ind][class_label - 1] += 1
 
                     info = {"loss-Val": loss, "accuracy-val": val_accuracy}
 
@@ -505,10 +517,9 @@ class Processor:
                     f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
                 )
 
-                print("Here are the just predicted labels: ", predictions1)
-                print("Here are the correct labels: ", label1)
-                print("Here are the just predicted labels: ", predictions2)
-                print("Here are the correct labels: ", label2)
+                for ind, predicts in enumerate(predictions):
+                    print(f"Here are the just predicted labels{ind+1}: {predicts}")
+                    print(f"Here are the correct labels{ind+1}: {labels[ind]}")
                 print("Total samples seen so far: ", val_total)
 
                 stats_val = f"Validation: Epoch [{epoch}/{self.arg.num_epoch}], Loss: {loss.item()}, Validation Accuracy: {val_accuracy}"
