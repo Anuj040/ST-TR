@@ -1,0 +1,73 @@
+
+# feeder
+feeder: st_gcn.feeder.FeederCustomSingle
+train_feeder_args:
+  random_choose: True
+  random_move: True
+  window_size: 32
+  data_path: ./custom_data/train_data.npy
+  label_path: ./custom_data/train_labels.npy
+test_feeder_args:
+  data_path: ./custom_data/test_data.npy
+  label_path: ./custom_data/test_labels.npy
+
+# model
+model: st_gcn.net.ST_GCN
+training: True
+model_args:
+  num_class: [17]
+  channel: 3 # For joints only, 6: including bones
+  window_size: 30
+  num_person: 1
+  dropout: 0
+  graph: st_gcn.graph.Custom
+  graph_args:
+    labeling_mode: 'spatial'
+  mask_learning: True
+  use_data_bn: True
+  attention: False
+  only_attention: True
+  tcn_attention: True
+  data_normalization: True
+  skip_conn: True
+  weight_matrix: 2
+  only_temporal_attention: True
+  bn_flag: True
+  attention_3: False
+  kernel_temporal: 9
+  more_channels: False
+  double_channel: True
+  drop_connect: True
+  concat_original: True
+  all_layers: False
+  adjacency: False
+  agcn: True
+  dv: 0.25
+  dk: 0.25
+  Nh: 8
+  n: 4
+  dim_block1: 10
+  dim_block2: 30
+  dim_block3: 75
+  relative: False
+  visualization: False
+  loss_fn: multilabel
+
+  #optical_flow: True
+
+#optim
+weight_decay: 0.0001
+base_lr: 0.1
+step: [45, 55]
+accumulating_gradients: True
+optimize_every: 4
+
+# training
+device: [0]
+batch_size: 8
+test_batch_size: 16
+num_epoch: 1
+nesterov: True
+log_interval: 10
+# precision: amp
+# clip_grad_norm: 0.00001
