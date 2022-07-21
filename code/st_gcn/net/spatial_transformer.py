@@ -1,24 +1,42 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda" if use_cuda else "cpu")
 multi_matmul = False
 
-'''
+"""
 This class implements Spatial Transformer. 
 Function adapted from: https://github.com/leaderj1001/Attention-Augmented-Conv2d
 
-'''
+"""
 
 
 class spatial_attention(nn.Module):
-    def __init__(self, in_channels, kernel_size, dk, dv, Nh, complete, relative, layer, A, more_channels, drop_connect,
-                 adjacency, num, num_point,
-                 shape=25, stride=1,
-                 last_graph=False, data_normalization=True, skip_conn=True, visualization=True):
+    def __init__(
+        self,
+        in_channels,
+        kernel_size,
+        dk,
+        dv,
+        Nh,
+        complete,
+        relative,
+        layer,
+        A,
+        more_channels,
+        drop_connect,
+        adjacency,
+        num,
+        num_point,
+        shape=25,
+        stride=1,
+        last_graph=False,
+        data_normalization=True,
+        skip_conn=True,
+        visualization=True,
+    ):
         super(spatial_attention, self).__init__()
         self.in_channels = in_channels
         self.complete = complete
@@ -34,7 +52,7 @@ class spatial_attention(nn.Module):
         self.skip_conn = skip_conn
         self.adjacency = adjacency
         self.Nh = Nh
-        self.num_point=num_point
+        self.num_point = num_point
         self.A = A[0] + A[1] + A[2]
         if self.adjacency:
             self.mask = nn.Parameter(torch.ones(self.A.size()))
@@ -45,24 +63,36 @@ class spatial_attention(nn.Module):
         self.padding = (self.kernel_size - 1) // 2
 
         assert self.Nh != 0, "integer division or modulo by zero, Nh >= 1"
-        assert self.dk % self.Nh == 0, "dk should be divided by Nh. (example: out_channels: 20, dk: 40, Nh: 4)"
-        assert self.dv % self.Nh == 0, "dv should be divided by Nh. (example: out_channels: 20, dv: 4, Nh: 4)"
+        assert (
+            self.dk % self.Nh == 0
+        ), "dk should be divided by Nh. (example: out_channels: 20, dk: 40, Nh: 4)"
+        assert (
+            self.dv % self.Nh == 0
+        ), "dv should be divided by Nh. (example: out_channels: 20, dv: 4, Nh: 4)"
         assert stride in [1, 2], str(stride) + " Up to 2 strides are allowed."
 
+        if self.more_channels:
 
-        if (self.more_channels):
-
-            self.qkv_conv = nn.Conv2d(self.in_channels, (2 * self.dk + self.dv) * self.Nh // self.num,
-                                      kernel_size=self.kernel_size,
-                                      stride=stride,
-                                      padding=self.padding)
+            self.qkv_conv = nn.Conv2d(
+                self.in_channels,
+                (2 * self.dk + self.dv) * self.Nh // self.num,
+                kernel_size=self.kernel_size,
+                stride=stride,
+                padding=self.padding,
+            )
         else:
-            self.qkv_conv = nn.Conv2d(self.in_channels, 2 * self.dk + self.dv, kernel_size=self.kernel_size,
-                                      stride=stride,
-                                      padding=self.padding)
-        if (self.more_channels):
+            self.qkv_conv = nn.Conv2d(
+                self.in_channels,
+                2 * self.dk + self.dv,
+                kernel_size=self.kernel_size,
+                stride=stride,
+                padding=self.padding,
+            )
+        if self.more_channels:
 
-            self.attn_out = nn.Conv2d(self.dv * self.Nh // self.num, self.dv, kernel_size=1, stride=1)
+            self.attn_out = nn.Conv2d(
+                self.dv * self.Nh // self.num, self.dv, kernel_size=1, stride=1
+            )
         else:
             self.attn_out = nn.Conv2d(self.dv, self.dv, kernel_size=1, stride=1)
 
@@ -71,13 +101,27 @@ class spatial_attention(nn.Module):
             # One weight repeated over the diagonal
             # V^2-V+1 paramters in positions outside the diagonal
             if self.more_channels:
-                self.key_rel = nn.Parameter(torch.randn(((self.num_point ** 2) - self.num_point, self.dk // self.num), requires_grad=True))
+                self.key_rel = nn.Parameter(
+                    torch.randn(
+                        ((self.num_point**2) - self.num_point, self.dk // self.num),
+                        requires_grad=True,
+                    )
+                )
             else:
-                self.key_rel = nn.Parameter(torch.randn(((self.num_point ** 2) - self.num_point, self.dk // Nh), requires_grad=True))
+                self.key_rel = nn.Parameter(
+                    torch.randn(
+                        ((self.num_point**2) - self.num_point, self.dk // Nh),
+                        requires_grad=True,
+                    )
+                )
             if self.more_channels:
-                self.key_rel_diagonal = nn.Parameter(torch.randn((1, self.dk // self.num), requires_grad=True))
+                self.key_rel_diagonal = nn.Parameter(
+                    torch.randn((1, self.dk // self.num), requires_grad=True)
+                )
             else:
-                self.key_rel_diagonal = nn.Parameter(torch.randn((1, self.dk // self.Nh), requires_grad=True))
+                self.key_rel_diagonal = nn.Parameter(
+                    torch.randn((1, self.dk // self.Nh), requires_grad=True)
+                )
 
     def forward(self, x, label, name):
         # Input x
@@ -88,16 +132,18 @@ class spatial_attention(nn.Module):
         # (batch_size, Nh, dvh or dkh, joints)
         # dvh = dv / Nh, dkh = dk / Nh
         # q, k, v obtained by doing 2D convolution on the input (q=XWq, k=XWk, v=XWv)
-        flat_q, flat_k, flat_v, q, k, v = self.compute_flat_qkv(x, self.dk, self.dv, self.Nh)
+        flat_q, flat_k, flat_v, q, k, v = self.compute_flat_qkv(
+            x, self.dk, self.dv, self.Nh
+        )
 
         # Calculate the scores, obtained by doing q*k
         # (batch_size, Nh, joints, dkh)*(batch_size, Nh, dkh, joints) =  (batch_size, Nh, joints,joints)
         # The multiplication can also be divided (multi_matmul) in case of space problems
-        if (multi_matmul):
+        if multi_matmul:
             for i in range(0, 5):
-                flat_q_5 = flat_q[:, :, :, (5 * i):(5 * (i + 1))]
+                flat_q_5 = flat_q[:, :, :, (5 * i) : (5 * (i + 1))]
                 product = torch.matmul(flat_q_5.transpose(2, 3), flat_k)
-                if (i == 0):
+                if i == 0:
                     logits = product
                 else:
                     logits = torch.cat((logits, product), dim=2)
@@ -106,14 +152,14 @@ class spatial_attention(nn.Module):
 
         # In this version, the adjacency matrix is weighted and added to the attention logits of transformer to add
         # information of the original skeleton structure
-        if (self.adjacency):
+        if self.adjacency:
             self.A = self.A.cuda(device)
             logits = logits.reshape(-1, V, V)
             M, V, V = logits.shape
             A = self.A
             A *= self.mask
             A = A.unsqueeze(0).expand(M, V, V)
-            logits = logits+A
+            logits = logits + A
             logits = logits.reshape(B, self.Nh, V, V)
 
         # Relative positional encoding is used or not
@@ -128,13 +174,11 @@ class spatial_attention(nn.Module):
             weights = F.softmax(logits, dim=-1)
 
         # Drop connect implementation to avoid overfitting
-        if (self.drop_connect and self.training):
+        if self.drop_connect and self.training:
             mask = torch.bernoulli((0.5) * torch.ones(B * self.Nh * V, device=device))
             mask = mask.reshape(B, self.Nh, V).unsqueeze(2).expand(B, self.Nh, V, V)
             weights = weights * mask
             weights = weights / (weights.sum(3, keepdim=True) + 1e-8)
-
-
 
         # attn_out
         # (batch, Nh, joints, dvh)
@@ -164,8 +208,15 @@ class spatial_attention(nn.Module):
 
         # if self.more_channels=True, to each head is assigned dk*self.Nh//self.num channels
         if self.more_channels:
-            q, k, v = torch.split(qkv, [dk * self.Nh // self.num, dk * self.Nh // self.num, dv * self.Nh // self.num],
-                                  dim=1)
+            q, k, v = torch.split(
+                qkv,
+                [
+                    dk * self.Nh // self.num,
+                    dk * self.Nh // self.num,
+                    dv * self.Nh // self.num,
+                ],
+                dim=1,
+            )
         else:
             q, k, v = torch.split(qkv, [dk, dk, dv], dim=1)
         q = self.split_heads_2d(q, Nh)
@@ -173,7 +224,7 @@ class spatial_attention(nn.Module):
         v = self.split_heads_2d(v, Nh)
 
         dkh = dk // Nh
-        q = q*(dkh ** -0.5)
+        q = q * (dkh**-0.5)
         if self.more_channels:
             flat_q = torch.reshape(q, (N, Nh, dk // self.num, T * V))
             flat_k = torch.reshape(k, (N, Nh, dk // self.num, T * V))
@@ -205,7 +256,9 @@ class spatial_attention(nn.Module):
         q = torch.reshape(q, (B * Nh * T, V, dk))
         # key_rel_diagonal: (1, dk) -> (V, dk)
         param_diagonal = self.key_rel_diagonal.expand((V, dk))
-        rel_logits = self.relative_logits_1d(q_first, q, self.key_rel, param_diagonal, T, V, Nh)
+        rel_logits = self.relative_logits_1d(
+            q_first, q, self.key_rel, param_diagonal, T, V, Nh
+        )
         return rel_logits
 
     def relative_logits_1d(self, q_first, q, rel_k, param_diagonal, T, V, Nh):
@@ -213,9 +266,9 @@ class spatial_attention(nn.Module):
         # (B*Nh*1,V^2-V, self.dk // Nh)*(V^2 - V, self.dk // Nh)
 
         # (B*Nh*1, V^2-V)
-        rel_logits = torch.einsum('bmd,md->bm', q_first, rel_k)
+        rel_logits = torch.einsum("bmd,md->bm", q_first, rel_k)
         # (B*Nh*1, V)
-        rel_logits_diagonal = torch.einsum('bmd,md->bm', q, param_diagonal)
+        rel_logits_diagonal = torch.einsum("bmd,md->bm", q, param_diagonal)
 
         # reshapes to obtain Srel
         rel_logits = self.rel_to_abs(rel_logits, rel_logits_diagonal)

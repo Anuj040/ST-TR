@@ -71,7 +71,6 @@ class Feeder_kinetics(Dataset):
 
         # load data
         if self.use_mmap:
-            print(len(self.sample_name))
             self.data = np.memmap(
                 self.data_path,
                 mode="r",
@@ -83,6 +82,7 @@ class Feeder_kinetics(Dataset):
                     NUM_PERSON_OUT,
                 ),
             )
+            print(len(self.sample_name), self.data.shape)
         else:
             self.data = np.load(self.data_path)
         if self.debug:
@@ -127,8 +127,6 @@ class Feeder_kinetics(Dataset):
             data_numpy = tools.auto_pading(data_numpy, self.window_size)
         if self.random_move:
             data_numpy = tools.random_move(data_numpy)
-        # for i in range(0,25):
-        # print(data_numpy[:,3:6, :, i]==data_numpy[:,0:3, :, i+1]-data_numpy[:,0:3, :, i])
         return data_numpy, label, sample_name
 
     def top_k(self, score, top_k):

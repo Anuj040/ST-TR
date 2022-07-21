@@ -4,24 +4,30 @@ import pickle
 import numpy as np
 from tqdm import tqdm
 
-'''
+"""
 Function used to combine S-TR and T-TR into ST-TR
 Function adapted from: https://github.com/kenziyuliu/Unofficial-DGNN-PyTorch
-'''
+"""
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--datasets', default='kinetics', choices={'kinetics', 'ntu/xsub', 'ntu/xview'},
-                    help='the work folder for storing results')
-parser.add_argument('--alpha', default=1, help='weighted summation')
+parser.add_argument(
+    "--datasets",
+    default="kinetics",
+    choices={"kinetics", "ntu/xsub", "ntu/xview"},
+    help="the work folder for storing results",
+)
+parser.add_argument("--alpha", default=1, help="weighted summation")
 arg = parser.parse_args()
 
 dataset = arg.datasets
-label = open('./Output_skeletons_without_missing_skeletons/xsub/val_label_filtered.pkl', 'rb')
+label = open(
+    "./Output_skeletons_without_missing_skeletons/xsub/val_label_filtered.pkl", "rb"
+)
 label = np.array(pickle.load(label))
 #
-r1 = open('./epoch1_test_score_s-tr.pkl', 'rb')
+r1 = open("./epoch1_test_score_s-tr.pkl", "rb")
 r1 = list(pickle.load(r1).items())
-r2 = open('./epoch1_test_score_t-tr.pkl', 'rb')
+r2 = open("./epoch1_test_score_t-tr.pkl", "rb")
 r2 = list(pickle.load(r2).items())
 right_num = total_num = right_num_5 = 0
 print(label.size)
