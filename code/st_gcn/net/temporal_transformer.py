@@ -222,12 +222,7 @@ class TcnUnitAttention(nn.Module):
         # (batch, Nh, time, time)*(batch, Nh, time, dvh)=(batch, Nh, time, dvh)
 
         attn_out = torch.matmul(weights, flat_v.transpose(2, 3))
-        shape = (
-            B,
-            self.Nh,
-            1,
-            T,
-        )
+        shape = (B, self.Nh, 1, T)
         shape += (self.dv // self.num,) if self.more_channels else (self.dv // self.Nh,)
         attn_out = torch.reshape(attn_out, shape)
 

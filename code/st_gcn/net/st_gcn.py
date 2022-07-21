@@ -112,7 +112,8 @@ class Model(nn.Module):
         multiscale=False,
         kernel_temporal=9,
         dropout=0.5,
-        agcn=True,
+        agcn: bool = True,
+        loss_fn: str = "cce",
     ):
         super().__init__()
         if graph is None:
@@ -240,7 +241,6 @@ class Model(nn.Module):
             else:
                 backbone_out_t = backbone_out_t // stride + 1
         self.backbone = nn.ModuleList(backbone)
-        # print("self.backbone: ", self.backbone)
 
         # head
         if not all_layers:
@@ -272,7 +272,12 @@ class Model(nn.Module):
         if type(self.num_class) == list:
             self.fcn = nn.ModuleList(
                 [
-                    nn.Conv1d(backbone_out_c, num_classes, kernel_size=1)
+                    nn.Sequential(
+                        nn.Conv1d(backbone_out_c, num_classes, kernel_size=1),
+                        nn.Sigmoid(),
+                    )
+                    if loss_fn == "multilabel"
+                    else nn.Conv1d(backbone_out_c, num_classes, kernel_size=1)
                     for num_classes in self.num_class
                 ]
             )

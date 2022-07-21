@@ -12,8 +12,9 @@ import torch.nn as nn
 import torch.optim as optim
 import yaml
 from argument_parser import get_parser
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, f1_score
 from tensorboardX import SummaryWriter
+from tools.accuracy import multi_label_accuracy, single_label_accuracy
 from tools.seesaw import SeesawLoss
 from torch.cuda.amp import GradScaler
 from utils.misc import import_class, save_arg
@@ -120,18 +121,23 @@ class Processor:
         self.model = nn.DataParallel(
             Model(**self.arg.model_args, num_point=self.num_points).to(DEVICE)
         )
-        if self.arg.loss_fn == "cce":
+        loss_fn = self.arg.model_args["loss_fn"]
+        if loss_fn == "cce":
             self.loss = [
                 nn.CrossEntropyLoss().to(DEVICE)
                 for _ in self.arg.model_args["num_class"]
             ]
-        elif self.arg.loss_fn == "seesaw":
+        elif loss_fn == "seesaw":
             self.loss = [
                 SeesawLoss(num_classes=num_class).to(DEVICE)
                 for num_class in self.arg.model_args["num_class"]
             ]
+        elif loss_fn == "multilabel":
+            self.loss = [
+                torch.nn.BCELoss().to(DEVICE) for _ in self.arg.model_args["num_class"]
+            ]
         else:
-            raise ValueError(f"loss_fn type '{self.arg.loss_fn}' is not a valid option")
+            raise ValueError(f"loss_fn type '{loss_fn}' is not a valid option")
 
         if self.arg.weights:
             self.time_keeper.print_log(f"Load weights from {self.arg.weights}.")
@@ -220,6 +226,8 @@ class Processor:
 
             data = data.float().to(DEVICE)
             labels = [label.to(DEVICE) for label in labels]
+            if arg.model_args["loss_fn"] == "multilabel":
+                labels = [label.float() for label in labels]
             timer["dataloader"] += self.time_keeper.split_time()
 
             # forward
@@ -239,16 +247,16 @@ class Processor:
             loss_value.append(loss.item())
 
             # Metrics
-            predictions = [torch.max(output, 1)[1] for output in outputs]
-            train_total += labels[0].size(0)
-            for ind, predicts in enumerate(predictions):
-                train_correct[ind] += (predicts == labels[ind]).sum().item()
-            acc = (
-                100
-                * sum(train_correct)
-                / train_total
-                / len(self.arg.model_args["num_class"])
-            )
+            if arg.model_args["loss_fn"] == "multilabel":
+                acc, predictions, train_total, train_correct = multi_label_accuracy(
+                    outputs, labels, train_total, train_correct
+                )
+                acc /= sum(self.arg.model_args["num_class"])
+            else:
+                acc, predictions, train_total, train_correct = single_label_accuracy(
+                    outputs, labels, train_total, train_correct
+                )
+                acc /= len(self.arg.model_args["num_class"])
 
             # backward
             loss /= running_optimize_every
@@ -300,8 +308,8 @@ class Processor:
             loss_value,
         )
         for ind, predicts in enumerate(predictions):
-            print(f"Here are the just predicted labels{ind+1}: {predicts}")
-            print(f"Here are the correct labels{ind+1}: {labels[ind]}")
+            print(f"Here are the just predicted labels{ind+1}: {predicts.detach()}")
+            print(f"Here are the correct labels{ind+1}: {labels[ind].detach()}")
 
     def train_logging(
         self,
@@ -318,11 +326,14 @@ class Processor:
 
         # Get training statistics.
         self.time_keeper.print_log(
-            f"\tBatch({batch_idx + 1}/{total_batches}) done. Loss: {loss.item():.4f}, Training Accuracy: {acc:.4f}  lr:{lr:.6f}"
+            (
+                f"\tBatch({batch_idx + 1}/{total_batches}) done. Loss: {loss.item():.4f},"
+                f"Training Accuracy: {acc:.4f}  lr:{lr:.6f}"
+            )
         )
 
         # Print tensorboard info
-        info = {"loss-Train": loss, "accuracy-Train": acc}
+        info = {"loss-train": loss, "accuracy-train": acc}
         for tag, value in info.items():
             writer.add_scalar(tag, value, step)
 
@@ -340,8 +351,8 @@ class Processor:
                 for k, v in timer.items()
             }
             self.time_keeper.print_log(
-                "\tTime consumption: [Data]{dataloader}, [Network]{model}".format(
-                    **proportion
+                "\tTime consumption: {}, [Data]{dataloader}, [Network]{model}".format(
+                    sum(timer.values()), **proportion
                 )
             )
             print("saving!")
@@ -475,7 +486,9 @@ class Processor:
 
         print(f"\n{stats_val}")
 
-    def val(self, epoch, save_score=False, loader_name=["val"]):
+    def val(self, epoch: int, save_score: bool = False, loader_name: list = None):
+        if loader_name is None:
+            loader_name = ["val"]
         self.model.eval()
         self.time_keeper.print_log(f"Eval epoch: {epoch + 1}")
 
@@ -487,6 +500,8 @@ class Processor:
         class_total = [
             [0.0] * num_classes for num_classes in self.arg.model_args["num_class"]
         ]
+        class_labels = [[]] * len(self.arg.model_args["num_class"])
+        class_outputs = [[]] * len(self.arg.model_args["num_class"])
 
         with torch.no_grad():
             for ln in loader_name:
@@ -494,6 +509,8 @@ class Processor:
                 for data, labels in self.data_loader[ln]:
                     data = data.float().to(DEVICE)
                     labels = [label.to(DEVICE) for label in labels]
+                    if arg.model_args["loss_fn"] == "multilabel":
+                        labels = [label.float() for label in labels]
 
                     outputs = self.model(data)
                     loss = sum(
@@ -502,30 +519,45 @@ class Processor:
                     )
                     loss_value.append(loss.item())
 
-                    predictions = [torch.max(output, 1)[1] for output in outputs]
-                    val_total += labels[0].size(0)
-                    for ind, predicts in enumerate(predictions):
-                        val_correct[ind] += (predicts == labels[ind]).sum().item()
-                    val_accuracy = (
-                        100
-                        * sum(val_correct)
-                        / val_total
-                        / len(self.arg.model_args["num_class"])
-                    )
+                    # Metrics
+                    if arg.model_args["loss_fn"] == "multilabel":
+                        (
+                            val_accuracy,
+                            predictions,
+                            val_total,
+                            val_correct,
+                        ) = multi_label_accuracy(
+                            outputs, labels, val_total, val_correct
+                        )
+                        val_accuracy /= sum(self.arg.model_args["num_class"])
+                        # Storing validation set labels and targets
+                        for ind, label in enumerate(labels):
+                            class_labels[ind].append(label.cpu())
+                            class_outputs[ind].append(outputs[ind].cpu())
+                    else:
+                        (
+                            val_accuracy,
+                            predictions,
+                            val_total,
+                            val_correct,
+                        ) = single_label_accuracy(
+                            outputs, labels, val_total, val_correct
+                        )
+                        val_accuracy /= len(self.arg.model_args["num_class"])
 
-                    c = [
-                        (label == predicts.squeeze()).float()
-                        for label, predicts in zip(labels, predictions)
-                    ]
+                        c = [
+                            (label == predicts.squeeze()).float()
+                            for label, predicts in zip(labels, predictions)
+                        ]
 
-                    # Calculating validation accuracy for each class
-                    for ind, label in enumerate(labels):
-                        for l in range(label.size(0)):
-                            class_label = label[l]
-                            class_correct[ind][class_label - 1] += c[ind][l]
-                            class_total[ind][class_label - 1] += 1
+                        # Calculating validation accuracy for each class
+                        for ind, label in enumerate(labels):
+                            for l in range(label.size(0)):
+                                class_label = label[l]
+                                class_correct[ind][class_label - 1] += c[ind][l]
+                                class_total[ind][class_label - 1] += 1
 
-                    info = {"loss-Val": loss, "accuracy-val": val_accuracy}
+                    info = {"loss-val": loss, "accuracy-val": val_accuracy}
 
                 self.time_keeper.print_log(
                     f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
@@ -536,16 +568,33 @@ class Processor:
                     print(f"Here are the correct labels{ind+1}: {labels[ind]}")
                 print("Total samples seen so far: ", val_total)
 
-                stats_val = f"Validation: Epoch [{epoch}/{self.arg.num_epoch}], Loss: {loss.item()}, Validation Accuracy: {val_accuracy}"
+                stats_val = (
+                    f"Validation: Epoch [{epoch}/{self.arg.num_epoch}], Loss: {loss.item()}"
+                    f"Validation Accuracy: {val_accuracy}"
+                )
 
-                print("\n" + stats_val)
-                for ind, num_classes in enumerate(self.arg.model_args["num_class"]):
-                    print(f"class accuracies for {ind}th head")
-                    for i in range(num_classes):
-                        if class_total[ind][i] != 0:
-                            print(
-                                f"Accuracy of {i + 1} : {int(class_correct[ind][i])} / {int(class_total[ind][i])} = {int(100 * class_correct[ind][i] / class_total[ind][i])} %"
+                print(f"\n{stats_val}")
+                if arg.model_args["loss_fn"] == "multilabel":
+                    for ind in range(len(self.arg.model_args["num_class"])):
+                        print(f"f1-scores for {ind+1}th classifier:")
+                        print(
+                            f1_score(
+                                np.concatenate(class_labels[ind], axis=0),
+                                np.round(np.concatenate(class_outputs[ind], axis=0)),
+                                average=None,
                             )
+                        )
+                else:
+                    for ind, num_classes in enumerate(self.arg.model_args["num_class"]):
+                        print(f"class accuracies for {ind}th head")
+                        for i in range(num_classes):
+                            if class_total[ind][i] != 0:
+                                print(
+                                    (
+                                        f"Accuracy of {i + 1} : {int(class_correct[ind][i])} / {int(class_total[ind][i])} ="
+                                        f" {int(100 * class_correct[ind][i] / class_total[ind][i])} %"
+                                    )
+                                )
 
                 step = (epoch + 1) * (
                     len(self.data_loader["train"]) / (arg.optimize_every)
@@ -554,7 +603,6 @@ class Processor:
                 for tag, value in info.items():
                     writer.add_scalar(tag, value, step)
 
-        print(f"\n{stats_val}")
         return val_accuracy
 
     def start(self) -> None:
