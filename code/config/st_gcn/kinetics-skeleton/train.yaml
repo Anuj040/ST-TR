@@ -13,9 +13,10 @@ test_feeder_args:
 
 # model
 model: st_gcn.net.ST_GCN
+training: True
 model_args:
   num_class: 400
-  channel: 6
+  channel: 6 # For joints only, 6: including bones
   window_size: 150
   num_person: 2
   num_point: 18
@@ -58,10 +59,15 @@ model_args:
 weight_decay: 0.0001
 base_lr: 0.1
 step: [45, 55]
+# accumulating_gradients: True
+# optimize_every: 4
 
 # training
-device: [0, 1, 2, 3]
-batch_size: 64
-test_batch_size: 8
-num_epoch: 65
+device: [0]
+batch_size: 2
+test_batch_size: 16
+num_epoch: 1
 nesterov: True
+log_interval: 100
+# precision: amp
+# clip_grad_norm: 0.00001
