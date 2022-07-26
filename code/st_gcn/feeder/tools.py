@@ -39,11 +39,13 @@ def auto_pading(data_numpy, size, random_pad=False):
         data_numpy_paded = np.zeros((C, size, V, M))
         data_numpy_paded[:, begin : begin + T, :, :] = data_numpy
         return data_numpy_paded
-    else:
-        return data_numpy
+
+    return data_numpy
 
 
-def random_choose(data_numpy, size, auto_pad=True):
+def random_choose(
+    data_numpy: np.ndarray, size: int, auto_pad: bool = True
+) -> np.ndarray:
     # input: C,T,V,M
     C, T, V, M = data_numpy.shape
     if T == size:
