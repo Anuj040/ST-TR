@@ -7,6 +7,7 @@ from typing import List
 import adamod
 import networkx as nx
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -16,6 +17,7 @@ from sklearn.metrics import confusion_matrix, f1_score
 from tensorboardX import SummaryWriter
 from tools.accuracy import multi_label_accuracy, single_label_accuracy
 from tools.seesaw import SeesawLoss
+from tools.weighted_BCE import focal_weighted_bce
 from torch.cuda.amp import GradScaler
 from utils.misc import import_class, save_arg
 from utils.time_utils import TimeKeeper
@@ -28,6 +30,7 @@ from utils.train_utils import (
 from yaml import Loader, load
 
 NAME_EXP = "NTT_test"
+CURRENT_EXP = "focal_len_wt^0.5"
 writer = SummaryWriter(f"./{NAME_EXP}")
 np.random.seed(13696641)
 torch.manual_seed(13696641)
@@ -76,6 +79,9 @@ class Processor:
         self.trainLoader = Feeder(
             **self.arg.train_feeder_args,
             channel=self.arg.model_args["channel"],
+        )
+        self.sample_weights = torch.from_numpy(self.trainLoader.get_weights()).to(
+            DEVICE
         )
         self.testLoader = Feeder(
             **self.arg.test_feeder_args,
@@ -133,8 +139,12 @@ class Processor:
                 for num_class in self.arg.model_args["num_class"]
             ]
         elif loss_fn == "multilabel":
+            # self.loss = [
+            #     torch.nn.BCELoss().to(DEVICE) for _ in self.arg.model_args["num_class"]
+            # ]
             self.loss = [
-                torch.nn.BCELoss().to(DEVICE) for _ in self.arg.model_args["num_class"]
+                focal_weighted_bce(self.sample_weights)
+                for _ in self.arg.model_args["num_class"]
             ]
         else:
             raise ValueError(f"loss_fn type '{loss_fn}' is not a valid option")
@@ -577,12 +587,22 @@ class Processor:
                 if arg.model_args["loss_fn"] == "multilabel":
                     for ind in range(len(self.arg.model_args["num_class"])):
                         print(f"f1-scores for {ind+1}th classifier:")
-                        print(
-                            f1_score(
-                                np.concatenate(class_labels[ind], axis=0),
-                                np.round(np.concatenate(class_outputs[ind], axis=0)),
-                                average=None,
-                            )
+                        f1_vals = f1_score(
+                            np.concatenate(class_labels[ind], axis=0),
+                            np.round(np.concatenate(class_outputs[ind], axis=0)),
+                            average=None,
+                        )
+                        vals = {"exp": [CURRENT_EXP]}
+                        vals.update(
+                            {f"f1_{i + 1}": [val] for i, val in enumerate(f1_vals)}
+                        )
+                        df = pd.DataFrame(vals)
+                        csv_path = os.path.join(NAME_EXP, f"results_{ind + 1}.csv")
+                        df.to_csv(
+                            csv_path,
+                            index=False,
+                            mode="a",
+                            header=not os.path.exists(csv_path),
                         )
                 else:
                     for ind, num_classes in enumerate(self.arg.model_args["num_class"]):
