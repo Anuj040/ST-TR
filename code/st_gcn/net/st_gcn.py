@@ -236,10 +236,10 @@ class Model(nn.Module):
                         **kwargs
                     )
                 )
-            if backbone_out_t % stride == 0:
-                backbone_out_t = backbone_out_t // stride
-            else:
-                backbone_out_t = backbone_out_t // stride + 1
+
+            backbone_out_t //= stride
+            if backbone_out_t % stride != 0:
+                backbone_out_t += 1
         self.backbone = nn.ModuleList(backbone)
 
         # head
