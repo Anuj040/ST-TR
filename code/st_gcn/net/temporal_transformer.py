@@ -165,7 +165,10 @@ class TcnUnitAttention(nn.Module):
         # (batch_size, channels, time, joints)
         N, C, T, V = x.size()
         if time_mask is not None:
-            time_mask = -1e9 * time_mask.unsqueeze(-1).tile(1, 1, 1, time_mask.size(-1))
+            time_mask = float("-inf") * time_mask.unsqueeze(-1).tile(
+                1, 1, 1, time_mask.size(-1)
+            )
+            time_mask = torch.nan_to_num(time_mask)
         x_sum = x
 
         if self.data_normalization:

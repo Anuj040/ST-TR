@@ -90,7 +90,7 @@ class UnitAGCN(nn.Module):
             )
             A2 = self.conv_b[i](x).view(N, self.inter_c * T, V)
             if mask is not None:
-                mask = mask * -1e9
+                mask = torch.nan_to_num(mask * float("-inf"))
                 A1 = self.soft(torch.matmul(A1, A2) / A1.size(-1) + mask)  # N V V
             else:
                 A1 = self.soft(torch.matmul(A1, A2) / A1.size(-1))
