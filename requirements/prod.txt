@@ -5,7 +5,7 @@ networkx==2.3
 tensorboardX
 - tensorflow=1.13.1
 - seaborn
-- pandas
+pandas
 matplotlib
 pyyaml==5.4
 sacred
