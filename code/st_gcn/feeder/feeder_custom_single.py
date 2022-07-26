@@ -106,7 +106,7 @@ class FeederCustomSingle(Dataset):
         activity_label = self.activity_label[index]
 
         data_numpy = self.data[index]
-        data_numpy = np.array(data_numpy)
+        data_numpy = np.array(data_numpy) / 1000
 
         if self.normalization:
             data_numpy = (data_numpy - self.mean_map) / self.std_map
@@ -125,3 +125,9 @@ class FeederCustomSingle(Dataset):
         rank = score.argsort()
         hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(label)]
         return sum(hit_top_k) * 1.0 / len(hit_top_k)
+
+    def get_weights(self) -> np.ndarray:
+        freq = np.sum(self.activity_label, axis=0)
+        weights = len(self.activity_label) / freq
+        weights[weights == np.inf] = 1
+        return np.expand_dims(weights, axis=0) ** 0.5
