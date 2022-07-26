@@ -3,7 +3,7 @@
 feeder: st_gcn.feeder.FeederCustomSingle
 train_feeder_args:
   random_choose: True
-  random_move: True
+  random_move: False
   window_size: 32
   data_path: ./custom_data/train_data.npy
   label_path: ./custom_data/train_labels.npy
@@ -17,7 +17,7 @@ training: True
 model_args:
   num_class: [17]
   channel: 3 # For joints only, 6: including bones
-  window_size: 30
+  window_size: 32
   num_person: 1
   dropout: 0
   graph: st_gcn.graph.Custom
@@ -57,7 +57,7 @@ model_args:
 
 #optim
 weight_decay: 0.0001
-base_lr: 0.1
+base_lr: 0.001
 step: [45, 55]
 accumulating_gradients: True
 optimize_every: 4
@@ -66,8 +66,8 @@ optimize_every: 4
 device: [0]
 batch_size: 8
 test_batch_size: 16
-num_epoch: 1
+num_epoch: 10
 nesterov: True
-log_interval: 10
+log_interval: 1000
 # precision: amp
-# clip_grad_norm: 0.00001
+# clip_grad_norm: 1.0

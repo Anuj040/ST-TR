@@ -4,4 +4,4 @@ feature_length:
   right_hand_landmarks: 21
   pose_landmarks: 23
 fps: 4
-max_frames: 30
+max_frames: 32
