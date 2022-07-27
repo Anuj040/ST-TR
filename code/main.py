@@ -5,6 +5,7 @@ import pickle
 from typing import List
 
 import adamod
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -13,7 +14,11 @@ import torch.nn as nn
 import torch.optim as optim
 import yaml
 from argument_parser import get_parser
-from sklearn.metrics import confusion_matrix, f1_score
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    f1_score,
+    multilabel_confusion_matrix,
+)
 from tensorboardX import SummaryWriter
 from tools.accuracy import multi_label_accuracy, single_label_accuracy
 from tools.seesaw import SeesawLoss
@@ -30,7 +35,7 @@ from utils.train_utils import (
 from yaml import Loader, load
 
 NAME_EXP = "NTT_test"
-CURRENT_EXP = "focal_len_wt^0.5"
+CURRENT_EXP = "focal_(len_wt)^0.5"
 writer = SummaryWriter(f"./{NAME_EXP}")
 np.random.seed(13696641)
 torch.manual_seed(13696641)
@@ -51,11 +56,11 @@ class Processor:
             self.data_config = load(f, Loader=Loader)
         self.num_points = sum(list(self.data_config["feature_length"].values()))
 
+        self.time_keeper = TimeKeeper(arg)
         self.load_model()
         self.load_optimizer()
         self.graph = nx.Graph()
 
-        self.time_keeper = TimeKeeper(arg)
         save_arg(arg)
 
         self.best_epoch = 0
@@ -382,117 +387,116 @@ class Processor:
             loader_name = ["test"]
         self.model.eval()
         self.time_keeper.print_log(f"Eval epoch: {epoch + 1}")
-        val_correct = 0
+
         val_total = 0
-        conf_matrix_test = 0
-        class_correct = [0.0] * self.arg.model_args["num_class"]
-        class_total = [0.0] * self.arg.model_args["num_class"]
+        val_correct = [0] * len(self.arg.model_args["num_class"])
+        class_correct = [
+            [0.0] * num_classes for num_classes in self.arg.model_args["num_class"]
+        ]
+        class_total = [
+            [0.0] * num_classes for num_classes in self.arg.model_args["num_class"]
+        ]
+        class_labels = [[]] * len(self.arg.model_args["num_class"])
+        class_outputs = [[]] * len(self.arg.model_args["num_class"])
 
         with torch.no_grad():
             for ln in loader_name:
-                loss_value = []
-                score_frag = []
-                for data, label, _ in self.data_loader[ln]:
+                for data, labels in self.data_loader[ln]:
                     data = data.float().to(DEVICE)
-                    label = label.long().to(DEVICE)
+                    labels = [label.to(DEVICE) for label in labels]
 
-                    output = self.model(data, label)
-                    loss = self.loss(output, label)
-                    score_frag.append(output.data.cpu().numpy())
-                    loss_value.append(loss.data.item())
+                    outputs = self.model(data)
+                    (
+                        val_accuracy,
+                        predictions,
+                        val_total,
+                        val_correct,
+                    ) = multi_label_accuracy(outputs, labels, val_total, val_correct)
+                    val_accuracy /= sum(self.arg.model_args["num_class"])
+                    # Storing validation set labels and targets
+                    for ind, label in enumerate(labels):
+                        class_labels[ind].append(label.cpu())
+                        class_outputs[ind].append(outputs[ind].cpu())
 
-                    _, predictions = torch.max(output, 1)
-                    val_total = val_total + label.size(0)
-                    val_correct = (
-                        val_correct + (predictions == label).double().sum().item()
+        info = {"accuracy-test": val_accuracy}
+        for ind, num_classes in enumerate(self.arg.model_args["num_class"]):
+            conf_matrix_test = multilabel_confusion_matrix(
+                np.concatenate(class_labels[ind], axis=0),
+                np.round(np.concatenate(class_outputs[ind], axis=0)),
+                labels=np.arange(num_classes),
+            )
+            path = os.path.join(NAME_EXP, CURRENT_EXP)
+            os.makedirs(path, exist_ok=True)
+            np.save(
+                os.path.join(path, f"confusion_test_{epoch}_{ind + 1}"),
+                conf_matrix_test,
+            )
+            f, axes = plt.subplots(
+                num_classes // 5 if num_classes % 5 == 0 else num_classes // 5 + 1,
+                5,
+                figsize=(
+                    2
+                    * (
+                        num_classes // 5
+                        if num_classes % 5 == 0
+                        else num_classes // 5 + 1
+                    ),
+                    5 + 4,
+                ),
+            )
+            axes = axes.ravel()
+            for i, ax in enumerate(axes):
+                if i < num_classes:
+                    disp = ConfusionMatrixDisplay(
+                        conf_matrix_test[i], display_labels=[0, i + 1]
                     )
-                    val_accuracy = (val_correct / val_total) * 100
-                    c = (label == predictions.squeeze()).float()
-                    c.float().mean()
+                    disp.plot(ax=ax, values_format=".4g")
+                    disp.ax_.set_title(f"class {i + 1}")
 
-                    # Calculating validation accuracy for each class
-                    for l in range(label.size(0)):
-                        class_label = label[l]
-                        class_correct[class_label - 1] = (
-                            class_correct[class_label - 1] + c[l]
-                        )
-                        class_total[class_label - 1] = class_total[class_label - 1] + 1
+                    disp.ax_.set_xlabel("")
+                    disp.ax_.set_ylabel("")
+                    disp.im_.colorbar.remove()
+                else:
+                    ax.set_visible(False)
 
-                    # print("Test accuracy on batch: ", testing_accuracy_batch)
-                    info = {"loss-Val": loss, "accuracy-test": val_accuracy}
-                    conf_matrix_test += confusion_matrix(
-                        predictions.cpu(),
-                        label.cpu(),
-                        labels=np.arange(self.arg.model_args["num_class"]),
-                    )
-                    np.save(
-                        os.path.join(NAME_EXP, f"confusion_test_{epoch}"),
-                        conf_matrix_test,
-                    )
+            plt.subplots_adjust(wspace=0.35, hspace=0.01)
+            f.colorbar(disp.im_, ax=axes, fraction=0.046, pad=0.04)
+            f.suptitle(f"{CURRENT_EXP}", fontsize=16)
+            f.supxlabel("Predicted Labels")
+            f.supylabel("True Labels")
+            plt.savefig(
+                os.path.join(path, f"confusion_test_{epoch}_{ind + 1}.jpg"), dpi=150
+            )
 
-                score = np.concatenate(score_frag)
+        # if arg.display_recall_precision:
+        #     precision, recall = self.data_loader[
+        #         ln
+        #     ].dataset.calculate_recall_precision(score)
+        #     for i in range(len(precision)):
+        #         self.time_keeper.print_log(
+        #             f"\tClass{i + 1} Precision: {100 * precision[i]:.2f}%, Recall: {100 * recall[i]:.2f}%"
+        #         )
 
-                # Added
-                loss = np.mean(loss_value)
-                score_dict = dict(zip(self.data_loader[ln].dataset.sample_name, score))
-                with open(
-                    f"{self.arg.work_dir}/epoch{epoch + 1}_{ln}_score.pkl", "wb"
-                ) as f:
-                    pickle.dump(score_dict, f)
-
-                self.time_keeper.print_log(
-                    f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
-                )
-
-                if arg.display_recall_precision:
-                    precision, recall = self.data_loader[
-                        ln
-                    ].dataset.calculate_recall_precision(score)
-                    for i in range(len(precision)):
-                        self.time_keeper.print_log(
-                            f"\tClass{i + 1} Precision: {100 * precision[i]:.2f}%, Recall: {100 * recall[i]:.2f}%"
-                        )
-
-                for k in self.arg.show_topk:
-                    if arg.display_by_category:
-                        accuracy = self.data_loader[ln].dataset.top_k_by_category(
-                            score, k
-                        )
-                        for i in range(score.shape[1]):
-                            self.time_keeper.print_log(
-                                f"\tClass{i + 1} Top{k}: {100 * accuracy[i]:.2f}%"
-                            )
-                        self.time_keeper.print_log(
-                            f"\tTop{k}: {100 * sum(accuracy) / len(accuracy):.2f}%"
-                        )
-                    else:
-                        self.time_keeper.print_log(
-                            f"\tTop{k}: {100 * self.data_loader[ln].dataset.top_k(score, k):.2f}%"
-                        )
-
-                print("Here are the just predicted labels: ", predictions)
-                print("Here are the correct labels: ", label)
-                print("Total samples seen so far: ", val_total)
-
-                stats_val = f"Testing: Epoch [{epoch}/{self.arg.num_epoch}], Samples [{val_correct}/{val_total}], Loss: {loss.item()}, Testing Accuracy: {val_accuracy}"
-
-                print(f"\n{stats_val}")
-                for i in range(self.arg.model_args["num_class"]):
-                    if class_total[i] != 0:
-                        print(
-                            f"Accuracy of {i + 1} : {int(class_correct[i])} / {int(class_total[i])} = {int(100 * class_correct[i] / class_total[i])} %"
-                        )
-
-                        # Calculates the confusion matrix
-                        # conf_matrix = confusion_matrix(predictions.cpu(), label.cpu())
-                        # print("The confusion matrix is: ", conf_matrix)
-
-                        # Calculates and plots the confusion matrix
-                        # df_cm = pd.DataFrame(self.conf_matrix_val, index=[i for i in range(0, 60)],
-                        # columns=[i for i in range(0, 60)])
-                        # conf_fig = plt.figure(figsize=(13, 10))
-                        # plt.title("Confusion Matrix - Validation")
-                        # sn.heatmap(df_cm, annot=True)
+        # for k in self.arg.show_topk:
+        #     if arg.display_by_category:
+        #         accuracy = self.data_loader[ln].dataset.top_k_by_category(
+        #             score, k
+        #         )
+        #         for i in range(score.shape[1]):
+        #             self.time_keeper.print_log(
+        #                 f"\tClass{i + 1} Top{k}: {100 * accuracy[i]:.2f}%"
+        #             )
+        #         self.time_keeper.print_log(
+        #             f"\tTop{k}: {100 * sum(accuracy) / len(accuracy):.2f}%"
+        #         )
+        #     else:
+        #         self.time_keeper.print_log(
+        #             f"\tTop{k}: {100 * self.data_loader[ln].dataset.top_k(score, k):.2f}%"
+        #         )
+        stats_val = (
+            f"Validation: Epoch [{epoch}/{self.arg.num_epoch}], Loss: {loss.item()}"
+            f"Validation Accuracy: {val_accuracy}"
+        )
 
         print(f"\n{stats_val}")
 
@@ -567,7 +571,7 @@ class Processor:
                                 class_correct[ind][class_label - 1] += c[ind][l]
                                 class_total[ind][class_label - 1] += 1
 
-                    info = {"loss-val": loss, "accuracy-val": val_accuracy}
+                info = {"loss-val": loss, "accuracy-val": val_accuracy}
 
                 self.time_keeper.print_log(
                     f"\tMean {ln} loss of {len(self.data_loader[ln])} batches: {np.mean(loss_value)}."
@@ -695,7 +699,7 @@ class Processor:
         elif self.arg.phase == "test":
             if self.arg.weights is None:
                 raise ValueError("Please appoint --weights.")
-            self.arg.time_keeper.print_log = False
+            self.arg.print_log = False
             self.time_keeper.print_log(f"Model:   {self.arg.model}.")
             self.time_keeper.print_log(f"Weights: {self.arg.weights}.")
 
