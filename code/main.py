@@ -447,8 +447,16 @@ class Processor:
             axes = axes.ravel()
             for i, ax in enumerate(axes):
                 if i < num_classes:
+                    matrix = conf_matrix_test[i] / np.expand_dims(
+                        np.sum(conf_matrix_test[i], axis=-1), -1
+                    )
+                    matrix = np.nan_to_num(matrix, posinf=0)
+                    if matrix[0, 0] == 1:
+                        ax.set_visible(False)
+                        continue
+
                     disp = ConfusionMatrixDisplay(
-                        conf_matrix_test[i], display_labels=[0, i + 1]
+                        np.round_(matrix, decimals=2), display_labels=[0, i + 1]
                     )
                     disp.plot(ax=ax, values_format=".4g")
                     disp.ax_.set_title(f"class {i + 1}")
@@ -494,7 +502,7 @@ class Processor:
         #             f"\tTop{k}: {100 * self.data_loader[ln].dataset.top_k(score, k):.2f}%"
         #         )
         stats_val = (
-            f"Validation: Epoch [{epoch}/{self.arg.num_epoch}], Loss: {loss.item()}"
+            f"Validation: Epoch [{epoch}/{self.arg.num_epoch}]"
             f"Validation Accuracy: {val_accuracy}"
         )
 
