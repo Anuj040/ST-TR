@@ -64,20 +64,20 @@ class FeederCustomSingle(Dataset):
         # load data
         # data: N C V T M
         if self.use_mmap:
-            self.data = np.memmap(
-                self.data_path,
-                mode="r",
-                shape=(
+            self.data = np.memmap(self.data_path, mode="r", dtype=np.int32)
+            #! np.memmap reads extra data for some unknown reason
+            self.data = self.data.reshape(
+                (
                     len(self.activity_label),
                     self.channel,
                     self.config["max_frames"],
                     sum(list(self.config["feature_length"].values())),
                     1,
-                ),
+                )
             )
-            print(len(self.activity_label), self.data.shape)
         else:
             self.data = np.load(self.data_path)
+        print(len(self.activity_label), self.data.shape)
         if self.debug:
             self.data = self.data[:100]
             self.activity_label = self.activity_label[:100]
@@ -130,4 +130,4 @@ class FeederCustomSingle(Dataset):
         freq = np.sum(self.activity_label, axis=0)
         weights = len(self.activity_label) / freq
         weights[weights == np.inf] = 1
-        return np.expand_dims(weights, axis=0) ** 0.5
+        return np.expand_dims(weights, axis=0) ** 0.7

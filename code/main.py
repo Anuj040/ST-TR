@@ -35,7 +35,7 @@ from utils.train_utils import (
 from yaml import Loader, load
 
 NAME_EXP = "NTT_test"
-CURRENT_EXP = "focal_(len_wt)^0.5"
+CURRENT_EXP = "focal_(len_wt)**0.7"
 writer = SummaryWriter(f"./{NAME_EXP}")
 np.random.seed(13696641)
 torch.manual_seed(13696641)
@@ -451,9 +451,6 @@ class Processor:
                         np.sum(conf_matrix_test[i], axis=-1), -1
                     )
                     matrix = np.nan_to_num(matrix, posinf=0)
-                    if matrix[0, 0] == 1:
-                        ax.set_visible(False)
-                        continue
 
                     disp = ConfusionMatrixDisplay(
                         np.round_(matrix, decimals=2), display_labels=[0, i + 1]
@@ -701,7 +698,7 @@ class Processor:
                     print(f"  {d}")
                 state.update(weights)
                 self.model.load_state_dict(state)
-            # self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
+            self.test(epoch=0, save_score=self.arg.save_score, loader_name=["test"])
             self.time_keeper.print_log("Done.\n")
 
         elif self.arg.phase == "test":
