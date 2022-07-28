@@ -66,7 +66,7 @@ class FeederCustomSingle(Dataset):
         if self.use_mmap:
             self.data = np.memmap(self.data_path, mode="r", dtype=np.int32)
             #! np.memmap reads extra data for some unknown reason
-            self.data = self.data.reshape(
+            self.data = self.data[32:].reshape(
                 (
                     len(self.activity_label),
                     self.channel,
