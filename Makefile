@@ -17,6 +17,11 @@ run-formatter:
 	black ${files}
 	isort -m 3 --ca --settings-path ${MAKEFILE_DIR}/.isort.cfg ${files}
 
+.PHONY: admin
+admin:
+	sudo chmod 777 code/*.py
+	sudo chmod 777 code/**/*.py
+	sudo chmod 777 code/**/**/*.py
 
 .PHONY: run-cloudbuild-locally
 run-cloudbuild-locally:
