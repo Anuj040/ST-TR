@@ -35,7 +35,7 @@ from utils.train_utils import (
 from yaml import Loader, load
 
 NAME_EXP = "NTT_test"
-CURRENT_EXP = "focal_(len_wt)**0.7_disp"
+CURRENT_EXP = "focal_(len_wt)^0.5_disp"
 writer = SummaryWriter(f"./{NAME_EXP}")
 np.random.seed(13696641)
 torch.manual_seed(13696641)
@@ -237,6 +237,7 @@ class Processor:
             arg.optimize_every, tot_num_batches - running_batches
         )
         self.optimizer.zero_grad()
+        acc_mask = (self.sample_weights > 0).to(self.sample_weights.dtype)
         for batch_idx, (data, labels) in enumerate(loader):
 
             data = data.float().to(DEVICE)
@@ -264,15 +265,14 @@ class Processor:
             # Metrics
             if arg.model_args["loss_fn"] == "multilabel":
                 acc, predictions, train_total, train_correct = multi_label_accuracy(
-                    outputs, labels, train_total, train_correct
+                    outputs, labels, train_total, train_correct, acc_mask
                 )
-                acc /= sum(self.arg.model_args["num_class"])
+                acc /= torch.sum(acc_mask)
             else:
                 acc, predictions, train_total, train_correct = single_label_accuracy(
                     outputs, labels, train_total, train_correct
                 )
                 acc /= len(self.arg.model_args["num_class"])
-
             # backward
             loss /= running_optimize_every
             if scaler is not None:
@@ -399,6 +399,7 @@ class Processor:
         class_labels = [[]] * len(self.arg.model_args["num_class"])
         class_outputs = [[]] * len(self.arg.model_args["num_class"])
 
+        acc_mask = (self.sample_weights > 0).to(self.sample_weights.dtype)
         with torch.no_grad():
             for ln in loader_name:
                 for data, labels in self.data_loader[ln]:
@@ -411,8 +412,10 @@ class Processor:
                         predictions,
                         val_total,
                         val_correct,
-                    ) = multi_label_accuracy(outputs, labels, val_total, val_correct)
-                    val_accuracy /= sum(self.arg.model_args["num_class"])
+                    ) = multi_label_accuracy(
+                        outputs, labels, val_total, val_correct, acc_mask
+                    )
+                    val_accuracy /= np.sum(acc_mask)
                     # Storing validation set labels and targets
                     for ind, label in enumerate(labels):
                         class_labels[ind].append(label.cpu())
@@ -522,6 +525,7 @@ class Processor:
         class_labels = [[]] * len(self.arg.model_args["num_class"])
         class_outputs = [[]] * len(self.arg.model_args["num_class"])
 
+        acc_mask = (self.sample_weights > 0).to(self.sample_weights.dtype)
         with torch.no_grad():
             for ln in loader_name:
                 loss_value = []
@@ -546,9 +550,9 @@ class Processor:
                             val_total,
                             val_correct,
                         ) = multi_label_accuracy(
-                            outputs, labels, val_total, val_correct
+                            outputs, labels, val_total, val_correct, acc_mask
                         )
-                        val_accuracy /= sum(self.arg.model_args["num_class"])
+                        val_accuracy /= np.sum(acc_mask)
                         # Storing validation set labels and targets
                         for ind, label in enumerate(labels):
                             class_labels[ind].append(label.cpu())
