@@ -35,7 +35,7 @@ from utils.train_utils import (
 from yaml import Loader, load
 
 NAME_EXP = "NTT_test"
-CURRENT_EXP = "focal_(len_wt)**0.7"
+CURRENT_EXP = "focal_(len_wt)**0.7_disp"
 writer = SummaryWriter(f"./{NAME_EXP}")
 np.random.seed(13696641)
 torch.manual_seed(13696641)
@@ -248,13 +248,13 @@ class Processor:
             # forward
             if scaler is not None:
                 with torch.cuda.amp.autocast(enabled=True):
-                    outputs = self.model(data)
+                    outputs = self.model(data, training=True)
                     loss = sum(
                         loss_fn(output, label)
                         for output, label, loss_fn in zip(outputs, labels, self.loss)
                     )
             else:
-                outputs = self.model(data)
+                outputs = self.model(data, training=True)
                 loss = sum(
                     loss_fn(output, label)
                     for output, label, loss_fn in zip(outputs, labels, self.loss)
@@ -428,7 +428,7 @@ class Processor:
             path = os.path.join(NAME_EXP, CURRENT_EXP)
             os.makedirs(path, exist_ok=True)
             np.save(
-                os.path.join(path, f"confusion_test_{epoch}_{ind + 1}"),
+                os.path.join(path, f"confusion_{CURRENT_EXP}_{epoch}_{ind + 1}"),
                 conf_matrix_test,
             )
             f, axes = plt.subplots(

@@ -129,5 +129,5 @@ class FeederCustomSingle(Dataset):
     def get_weights(self) -> np.ndarray:
         freq = np.sum(self.activity_label, axis=0)
         weights = len(self.activity_label) / freq
-        weights[weights == np.inf] = 1
+        weights[weights == np.inf] = 0
         return np.expand_dims(weights, axis=0) ** 0.7

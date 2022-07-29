@@ -139,6 +139,7 @@ class Model(nn.Module):
         self.visualization = visualization
         self.double_channel = double_channel
         self.adjacency = adjacency
+        self.disp_amount = 0.001
 
         # Different bodies share batchNorm parameters or not
         self.M_dim_bn = True
@@ -284,11 +285,8 @@ class Model(nn.Module):
         else:
             self.fcn = nn.Conv1d(backbone_out_c, self.num_class, kernel_size=1)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, training: bool = False) -> torch.Tensor:
         N, C, T, V, M = x.size()
-        if self.concat_original:
-            x_coord = x
-            x_coord = x_coord.permute(0, 4, 1, 2, 3).reshape(N * M, C, T, V)
 
         # data bn
         time_mask = (torch.sum(x, dim=(1, 3, 4), keepdim=True) == 0).to(x.dtype)
@@ -304,6 +302,17 @@ class Model(nn.Module):
         # time_mask = None
 
         space_mask = (torch.sum(x, dim=(1, 2, 4), keepdim=True) == 0).to(x.dtype)
+        # Random translation for augmentation
+        if training and self.disp_amount > 0.0:
+            disp = -self.disp_amount + 2 * self.disp_amount * torch.rand(
+                (N, C, 1, 1, 1), dtype=x.dtype
+            ).to(x.device)
+            x = x + disp * (1 - space_mask)
+
+        if self.concat_original:
+            x_coord = x
+            x_coord = x_coord.permute(0, 4, 1, 2, 3).reshape(N * M, C, T, V)
+
         # from (N, 1, 1, V, 1) to (N*1, V, V)
         space_mask = (
             space_mask.permute(0, 4, 1, 2, 3).contiguous().view(N, V, 1).tile((1, 1, V))
