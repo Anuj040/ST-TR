@@ -415,7 +415,7 @@ class Processor:
                     ) = multi_label_accuracy(
                         outputs, labels, val_total, val_correct, acc_mask
                     )
-                    val_accuracy /= np.sum(acc_mask)
+                    val_accuracy /= torch.sum(acc_mask)
                     # Storing validation set labels and targets
                     for ind, label in enumerate(labels):
                         class_labels[ind].append(label.cpu())
@@ -552,7 +552,7 @@ class Processor:
                         ) = multi_label_accuracy(
                             outputs, labels, val_total, val_correct, acc_mask
                         )
-                        val_accuracy /= np.sum(acc_mask)
+                        val_accuracy /= torch.sum(acc_mask)
                         # Storing validation set labels and targets
                         for ind, label in enumerate(labels):
                             class_labels[ind].append(label.cpu())
