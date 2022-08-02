@@ -15,7 +15,7 @@ test_feeder_args:
 model: st_gcn.net.ST_GCN
 training: True
 model_args:
-  num_class: [17]
+  num_class: [10]
   channel: 3 # For joints only, 6: including bones
   window_size: 32
   num_person: 1

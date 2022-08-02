@@ -19,9 +19,11 @@ run-formatter:
 
 .PHONY: admin
 admin:
+	sudo chmod 777 *
 	sudo chmod 777 code/*.py
 	sudo chmod 777 code/**/*.py
 	sudo chmod 777 code/**/**/*.py
+	sudo chmod 777 code/**/**/**/*.yaml
 
 .PHONY: run-cloudbuild-locally
 run-cloudbuild-locally:

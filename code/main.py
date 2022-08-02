@@ -35,7 +35,7 @@ from utils.train_utils import (
 from yaml import Loader, load
 
 NAME_EXP = "NTT_test"
-CURRENT_EXP = "focal_(len_wt)^0.5_disp"
+CURRENT_EXP = "focal_(len_wt)^0.3_disp"
 writer = SummaryWriter(f"./{NAME_EXP}")
 np.random.seed(13696641)
 torch.manual_seed(13696641)
